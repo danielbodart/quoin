@@ -1,4 +1,4 @@
-# frisket-sudo as nixosModules.sudoGate runs it, with fakegalley as dan's
+# quoin-sudo as nixosModules.sudo runs it, with fakegalley as dan's
 # galley.service.
 { self }:
 { lib, hostPkgs, ... }:
@@ -7,8 +7,8 @@ let
   pkgs = hostPkgs;
   system = pkgs.stdenv.hostPlatform.system;
   fakegalley = lib.getExe self.packages.${system}.fakegalley;
-  plugin = self.packages.${system}.frisket-sudo-plugin;
-  password = "hunter2-frisket";
+  plugin = self.packages.${system}.quoin-sudo-plugin;
+  password = "hunter2-quoin";
 
   clientKey = pkgs.runCommand "sudo-gate-test-client-key" { nativeBuildInputs = [ pkgs.openssh ]; } ''
     mkdir $out
@@ -36,8 +36,8 @@ let
     def ask(kind):
         t = time.monotonic_ns()
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect("/run/frisket-sudo/gate.sock")
-        s.sendall(b"FSUD\x02" + kind + b"\0\0\0\0")
+        s.connect("/run/quoin-sudo/gate.sock")
+        s.sendall(b"QSUD\x02" + kind + b"\0\0\0\0")
         r = s.recv(3)
         return s, (time.monotonic_ns() - t) / 1e6, r[:1]
 
@@ -79,29 +79,29 @@ let
   sleeper = { wantedBy = [ "multi-user.target" ]; serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity"; };
 in
 {
-  name = "frisket-sudo";
+  name = "quoin-sudo";
 
   nodes.machine = { pkgs, ... }: {
-    imports = [ self.nixosModules.sudoGate ];
-    services.frisket.sudoGate.enable = true;
-    services.frisket.sudoGate.danger."systemctl **".args."bar*" = "touches bar";
+    imports = [ self.nixosModules.sudo ];
+    services.quoin.sudo.enable = true;
+    services.quoin.sudo.danger."systemctl **".args."bar*" = "touches bar";
     # The host's exec rules; the project's are in a signed chase.json the
     # test writes, read through the courier.
-    services.frisket.sudoGate.exec = {
+    services.quoin.sudo.exec = {
       "/run/current-system/sw/bin/uname **".answer = "allow";
       "/run/current-system/sw/bin/systemctl status **".answer = "allow";
       "/run/current-system/sw/bin/hostname **".answer = "refuse";
       "/run/current-system/sw/bin/whoami".answer = "ask";
     };
-    services.frisket.policy = { fileName = "chase.json"; courier.enable = true; };
+    services.quoin.policy = { fileName = "chase.json"; courier.enable = true; };
     # The key is made when the test runs, so the allowed signers are too.
-    environment.etc."frisket/allowed_signers".source = lib.mkForce "/run/sudo-gate-test/allowed_signers";
+    environment.etc."quoin/allowed_signers".source = lib.mkForce "/run/sudo-gate-test/allowed_signers";
 
     specialisation.nopasswd.configuration = nopasswd;
     specialisation.misread.configuration = {
       imports = [ nopasswd ];
       environment.etc."sudo.conf".source = lib.mkForce
-        (pkgs.writeText "sudo.conf" "Plugin frisket_audit ${plugin.misread}/lib/frisket_sudo.so user=dan\n");
+        (pkgs.writeText "sudo.conf" "Plugin quoin_audit ${plugin.misread}/lib/quoin_sudo.so user=dan\n");
     };
 
     users.users.dan = {
@@ -120,7 +120,7 @@ in
     services.openssh.enable = true;
 
     systemd.services.foo = sleeper;
-    systemd.services.frisket = sleeper;
+    systemd.services.quoin-spare = sleeper;
 
     systemd.tmpfiles.rules = [ "d /run/galley-ask 0755 dan users -" ];
     systemd.user.services.galley.serviceConfig = {
@@ -162,7 +162,7 @@ in
         return [e for e in map(json.loads, out.splitlines()) if e["event"] == kind]
 
     def gate_log():
-        out = machine.succeed("journalctl -u frisket-sudo.service -o cat")
+        out = machine.succeed("journalctl -u quoin-sudo.service -o cat")
         return [json.loads(l) for l in out.splitlines() if l.startswith("{")]
 
     def checkins():
@@ -204,17 +204,17 @@ in
         machine.wait_until_succeeds(f"systemctl -M dan@ --user is-active {where}.service")
 
     def stop_gate():
-        machine.succeed("systemctl stop frisket-sudo.socket frisket-sudo.service")
+        machine.succeed("systemctl stop quoin-sudo.socket quoin-sudo.service")
 
     def start_gate():
-        machine.succeed("systemctl start frisket-sudo.socket")
+        machine.succeed("systemctl start quoin-sudo.socket")
 
     def kill_sudo(signal="KILL"):
         machine.succeed(f"pkill -{signal} -x sudo")
 
-    gate_not_running = "frisket-sudo: gate not running (systemctl status frisket-sudo.socket); sudo in a terminal is not gated"
+    gate_not_running = "quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated"
 
-    machine.wait_for_unit("frisket-sudo.socket")
+    machine.wait_for_unit("quoin-sudo.socket")
     machine.wait_for_unit("sshd.service")
     machine.wait_for_unit("user@1000.service")
     machine.succeed("install -d -o dan -g users -m 0755 /run/fakegalley")
@@ -223,7 +223,7 @@ in
     with subtest("C and G answer well inside their 250 ms, from a cold gate too"):
         cold = []
         for i in range(5):
-            machine.succeed("systemctl stop frisket-sudo.service")
+            machine.succeed("systemctl stop quoin-sudo.service")
             cold.append(float(machine.succeed("python3 ${latency} cold")))
         warm = machine.succeed("python3 ${latency} warm").strip()
         print(f"gate latency: cold C {cold} ms; warm {warm}")
@@ -232,9 +232,9 @@ in
     with subtest("sudo's auth stack is the helper, pam_unix, pam_deny"):
         auth = machine.succeed("grep '^auth' /etc/pam.d/sudo").splitlines()
         assert len(auth) == 3, auth
-        assert "pam_exec.so seteuid quiet ${plugin}/bin/frisket-sudo-pam dan" in auth[0] and "sufficient" in auth[0], auth
+        assert "pam_exec.so seteuid quiet ${plugin}/bin/quoin-sudo-pam dan" in auth[0] and "sufficient" in auth[0], auth
         assert "pam_unix.so" in auth[1] and "pam_deny.so" in auth[2], auth
-        machine.succeed("grep -qx 'Plugin frisket_audit ${plugin}/lib/frisket_sudo.so user=dan' /etc/sudo.conf")
+        machine.succeed("grep -qx 'Plugin quoin_audit ${plugin}/lib/quoin_sudo.so user=dan' /etc/sudo.conf")
 
     with subtest("with a tty the gate is never contacted and sudo prompts as stock"):
         asked, ins = len(events("question")), checkins()
@@ -267,7 +267,7 @@ in
         assert q["text"] == "/run/current-system/sw/bin/systemctl restart foo", q
         assert q["table"]["rows"][0][1] == "claude" and q["table"]["summary"] == "claude", q
         err = machine.succeed("cat /run/claude-a/err")
-        assert "frisket-sudo: password remembered for this claude until" in err, err
+        assert "quoin-sudo: password remembered for this claude until" in err, err
         machine.fail(f"journalctl -o cat | grep -F {pw}")
         assert events("answer")[-1]["fields"][0] == len(pw)
 
@@ -282,7 +282,7 @@ in
 
     with subtest("danger inside the window is a danger question with no password"):
         asked = len(events("question"))
-        assert run("claude-a", "sudo systemctl stop frisket.service") == 0
+        assert run("claude-a", "sudo systemctl stop quoin-spare.service") == 0
         q = events("question")[asked]
         assert is_question(q) and q["level"] == "danger", q
         assert q["text"].split("\n")[0] == "touches a unit that guards this machine", q
@@ -351,7 +351,7 @@ in
     with subtest("danger outside a window: the dialog with a password and no time, and no window after"):
         galley("ok " + pw, "ok " + pw + " 0")
         asked = len(events("question"))
-        rc, out = notty("sudo systemctl stop frisket.service && sudo id -u")
+        rc, out = notty("sudo systemctl stop quoin-spare.service && sudo id -u")
         assert rc == 0 and "remembered" not in out, out
         qs = events("question")[asked:]
         assert len(qs) == 2 and qs[0]["level"] == "danger" and is_dialog(qs[0], time=False) and is_dialog(qs[1]), qs
@@ -375,11 +375,11 @@ in
         qs = events("question")[asked:]
         assert len(qs) == 2 and all(q["level"] == "danger" for q in qs), qs
         assert qs[0]["text"].split("\n")[0] == "touches a unit that guards this machine", qs[0]
-        assert qs[1]["text"].split("\n")[0] == "a shell command frisket cannot read", qs[1]
+        assert qs[1]["text"].split("\n")[0] == "a shell command the gate cannot read", qs[1]
 
     with subtest("the host's danger rule from config.json is danger beside the catalogue's"):
-        machine.succeed("${lib.getExe self.packages.${system}.frisket-sudo} check /etc/frisket-sudo/config.json")
-        assert "-config /etc/frisket-sudo/config.json" in machine.succeed("systemctl show -P ExecStart frisket-sudo.service")
+        machine.succeed("${lib.getExe' self.packages.${system}.quoin "quoin-sudo"} check /etc/quoin/sudo.json")
+        assert "-config /etc/quoin/sudo.json" in machine.succeed("systemctl show -P ExecStart quoin-sudo.service")
         asked = len(events("question"))
         notty("sudo systemctl restart bar.service")
         notty("sudo systemctl restart nftables.service")
@@ -395,7 +395,7 @@ in
         assert q["level"] == "normal" and any(l.startswith("FOO=") for l in q["text"].split("\n")), q
 
     with subtest("exec rules: allow runs unasked, refuse refuses, ask asks with no password; danger is still asked"):
-        machine.succeed("${lib.getExe self.packages.${system}.frisket-sudo} check /etc/frisket-sudo/config.json")
+        machine.succeed("${lib.getExe' self.packages.${system}.quoin "quoin-sudo"} check /etc/quoin/sudo.json")
         galley("cancel")
         asked = len(events("question"))
         rc, out = notty("sudo uname -r")
@@ -408,7 +408,7 @@ in
         rc, out = notty("sudo hostname")
         assert rc != 0 and "refused by the host rule /run/current-system/sw/bin/hostname **" in out, out
         assert len(events("question")) == asked
-        rc, out = notty("sudo systemctl status frisket.service")
+        rc, out = notty("sudo systemctl status quoin-spare.service")
         assert rc != 0, out
         q = events("question")[asked]
         assert q["level"] == "danger" and is_dialog(q, time=False), q
@@ -424,11 +424,11 @@ in
         galley("cancel")
         machine.succeed("install -d -m 0755 /run/sudo-gate-test")
         machine.succeed("ssh-keygen -q -t ed25519 -N ''' -C dan -f /run/sudo-gate-test/key && chown dan /run/sudo-gate-test/key")
-        machine.succeed("echo \"dan namespaces=\\\"frisket-policy:*\\\" $(cat /run/sudo-gate-test/key.pub)\" > /run/sudo-gate-test/allowed_signers")
+        machine.succeed("echo \"dan namespaces=\\\"quoin-policy:*\\\" $(cat /run/sudo-gate-test/key.pub)\" > /run/sudo-gate-test/allowed_signers")
         doc = json.dumps({"version": 2, "sudo": {"exec": {"/run/current-system/sw/bin/hostname **": {"runAs": "root", "answer": "allow"}}}})
         for d in ["signed", "unsigned"]:
             machine.succeed(f"install -d -o dan -g users /home/dan/{d} /home/dan/{d}/sub && echo {shlex.quote(doc)} > /home/dan/{d}/chase.json && chown dan /home/dan/{d}/chase.json")
-        machine.succeed("runuser -u dan -- ssh-keygen -Y sign -f /run/sudo-gate-test/key -n 'frisket-policy:~/signed' /home/dan/signed/chase.json")
+        machine.succeed("runuser -u dan -- ssh-keygen -Y sign -f /run/sudo-gate-test/key -n 'quoin-policy:~/signed' /home/dan/signed/chase.json")
         # From a claude, whose shell is the user's process nearest sudo: a
         # notty sudo's is runuser, root's, with nothing of dan's above it.
         asked = len(events("question"))
@@ -470,7 +470,7 @@ in
         machine.succeed("touch /run/fakegalley/go")
         machine.wait_until_succeeds("grep -q rc= /run/fakegalley/ticket.out")
         out = machine.succeed("cat /run/fakegalley/ticket.out")
-        assert "rc=0" not in out and "frisket_audit: unable to log accept event: gate not running" in out, out
+        assert "rc=0" not in out and "quoin_audit: unable to log accept event: gate not running" in out, out
         start_gate()
 
     with subtest("-v and -l fail as stock with no check-in, and the next sudo is asked"):
@@ -500,7 +500,7 @@ in
         assert len(events("question")) == asked and checkins() == ins
 
     with subtest("a child of sudo running as another user gets no for G"):
-        rc, out = notty("sudo -u bob env PAM_SERVICE=sudo PAM_USER=dan ${plugin}/bin/frisket-sudo-pam dan; echo rc=$?")
+        rc, out = notty("sudo -u bob env PAM_SERVICE=sudo PAM_USER=dan ${plugin}/bin/quoin-sudo-pam dan; echo rc=$?")
         assert "rc=1" in out, out
 
     with subtest("remote sudo -S is stock: no gate with nobody answering or the gate stopped; a wrong password fails"):
@@ -538,7 +538,7 @@ in
     with subtest("a no-tty sudo -l the policy allows reaches accept() and passes silently"):
         asked, ins = len(events("question")), checkins()
         rc, out = notty("sudo -l")
-        assert rc == 0 and "frisket_audit" not in out and "frisket-sudo:" not in out, out
+        assert rc == 0 and "quoin_audit" not in out and "quoin-sudo:" not in out, out
         assert len(events("question")) == asked and checkins() == ins
 
     with subtest("NOPASSWD with a plugin that misreads the mode is refused at accept"):
@@ -563,31 +563,31 @@ in
         return out, int(out.rsplit("ms=", 1)[1])
 
     with subtest("a stuck gate fails a no-tty sudo fast; tty sudo works"):
-        machine.succeed("systemctl start frisket-sudo.service")
-        machine.succeed("kill -STOP $(systemctl show -P MainPID frisket-sudo.service)")
+        machine.succeed("systemctl start quoin-sudo.service")
+        machine.succeed("kill -STOP $(systemctl show -P MainPID quoin-sudo.service)")
         out, ms = timed_notty("sudo id -u")
         print(f"no-tty sudo against a stuck gate: {ms} ms")
         assert "rc=0" not in out and gate_not_running in out and ms < 2000, out
         rc, out = tty("sudo id -u")
         assert "\n0" in out.replace("\r", ""), out
-        machine.succeed("kill -CONT $(systemctl show -P MainPID frisket-sudo.service)")
+        machine.succeed("kill -CONT $(systemctl show -P MainPID quoin-sudo.service)")
         rc, out = notty("sudo id -u")
         assert rc == 0, out
 
     with subtest("a crash-looping gate keeps the socket up: no-tty sudo fails fast, tty sudo works"):
         stop_gate()
-        machine.succeed("mkdir -p /run/systemd/system/frisket-sudo.service.d && "
-                        "printf '[Service]\\nExecStart=\\nExecStart=/run/current-system/sw/bin/false\\n' > /run/systemd/system/frisket-sudo.service.d/crash.conf && "
+        machine.succeed("mkdir -p /run/systemd/system/quoin-sudo.service.d && "
+                        "printf '[Service]\\nExecStart=\\nExecStart=/run/current-system/sw/bin/false\\n' > /run/systemd/system/quoin-sudo.service.d/crash.conf && "
                         "systemctl daemon-reload")
         start_gate()
         out, ms = timed_notty("sudo id -u")
         print(f"no-tty sudo against a crash-looping gate: {ms} ms")
         assert "rc=0" not in out and gate_not_running in out and ms < 2000, out
-        machine.succeed("systemctl is-active frisket-sudo.socket")
+        machine.succeed("systemctl is-active quoin-sudo.socket")
         rc, out = tty("sudo id -u")
         assert "\n0" in out.replace("\r", ""), out
         stop_gate()
-        machine.succeed("rm -r /run/systemd/system/frisket-sudo.service.d && systemctl daemon-reload && systemctl reset-failed frisket-sudo.service")
+        machine.succeed("rm -r /run/systemd/system/quoin-sudo.service.d && systemctl daemon-reload && systemctl reset-failed quoin-sudo.service")
         start_gate()
         rc, out = notty("sudo id -u")
         assert rc == 0, out

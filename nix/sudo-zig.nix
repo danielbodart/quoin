@@ -1,4 +1,4 @@
-# frisket-sudo's Zig (sudo/), built as flong builds its own.
+# quoin-sudo's Zig (sudo/), built as flong builds its own.
 { pkgs, sudo ? pkgs.sudo }:
 let
   inherit (pkgs) lib;
@@ -33,7 +33,7 @@ let
   # On a build.zig.zon change: hash = lib.fakeHash, build checks.sudo-zig,
   # copy `got:`.
   zigDeps = zig.fetchDeps {
-    pname = "frisket-sudo";
+    pname = "quoin-sudo";
     version = "0";
     fetchAll = true;
     src = lib.fileset.toSource {
@@ -43,10 +43,10 @@ let
     hash = "sha256-GicN77r9Oh9xPqlIP5CS0/y2hSenxlM6thAiv1bjBW8=";
   };
 
-  sources = map (f: root + "/${f}") [ "abi.zig" "fd.zig" "wire.zig" "chain.zig" "agent.zig" "ids.zig" "frisket_sudo.zig" "frisket-sudo-pam.zig" "frisket-sudo-check-plugin.zig" ];
+  sources = map (f: root + "/${f}") [ "abi.zig" "fd.zig" "wire.zig" "chain.zig" "agent.zig" "ids.zig" "quoin_sudo.zig" "quoin-sudo-pam.zig" "quoin-sudo-check-plugin.zig" ];
 
   plugin = variant: zigBuild {
-    pname = "frisket-sudo-plugin" + lib.optionalString (variant != null) "-${variant}";
+    pname = "quoin-sudo-plugin" + lib.optionalString (variant != null) "-${variant}";
     files = sources;
     steps = "install";
     flags = "-Dsudo-version=${sudo.version}"
@@ -77,7 +77,7 @@ in
   package = plugin null;
 
   check = zigBuild {
-    pname = "frisket-sudo-zig-check";
+    pname = "quoin-sudo-zig-check";
     files = sources ++ map (f: root + "/${f}") [ "plugin_test.zig" "misread_test.zig" "remote_test.zig" "planted_type.zig" "lint.zig" "analyze" ".zwanzig.json" ];
     steps = "test lint fmt analyze";
     flags = "-Ddev=true -Doracle=${oracle}/bin/oracle";

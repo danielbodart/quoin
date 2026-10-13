@@ -1,10 +1,11 @@
-# frisket-signer as nixosModules.signer runs it, over a software TPM: two
+# quoin-signer as nixosModules.signer runs it, over a software TPM: two
 # sshds with their own host keys, alpha (127.0.0.1) and beta (127.0.0.2),
 # both in /etc/ssh/ssh_known_hosts; fakegalley as dan's galley.service; and
 # the shapes the signer tells apart, built from renamed binaries, since a link
 # is known by its comm: a tab (script as .kgx-wrapped, holding a pty, with
-# bash on it), a claude (bash as claude) and frisket's main process (ssh as
-# frisket, in a stand-in frisket.service with frisket's hardening).
+# bash on it), a claude (bash as claude) and a login signer's main process
+# (ssh as porter, in a stand-in porter.service, listed in loginSigners, with
+# the hardening such a daemon has).
 { self }:
 { lib, hostPkgs, ... }:
 
@@ -26,8 +27,8 @@ let
     mkdir -p $out/bin $out/ssh $out/sh
     cp ${lib.getBin pkgs.util-linux}/bin/script $out/bin/.kgx-wrapped
     cp ${pkgs.bash}/bin/bash $out/bin/claude
-    cp ${pkgs.openssh}/bin/ssh $out/ssh/frisket
-    cp ${pkgs.bash}/bin/bash $out/sh/frisket
+    cp ${pkgs.openssh}/bin/ssh $out/ssh/porter
+    cp ${pkgs.bash}/bin/bash $out/sh/porter
   '';
 
   betaConfig = pkgs.writeText "sshd_config_beta" ''
@@ -41,22 +42,23 @@ let
   '';
 in
 {
-  name = "frisket-signer";
+  name = "quoin-signer";
 
   nodes.machine = { pkgs, ... }: {
     imports = [ self.nixosModules.signer ];
     virtualisation.tpm.enable = true;
-    services.frisket.signer.enable = true;
-    specialisation.ask.configuration.services.frisket.signer.terminal = lib.mkForce "ask";
-    specialisation.hosts.configuration.services.frisket.signer.ssh.hosts.alpha = "allow";
+    services.quoin.signer.enable = true;
+    services.quoin.signer.loginSigners = [ "porter.service" ];
+    specialisation.ask.configuration.services.quoin.signer.terminal = lib.mkForce "ask";
+    specialisation.hosts.configuration.services.quoin.signer.ssh.hosts.alpha = "allow";
 
     # A project's signed policy, through the courier. The key is made in the
     # TPM as the test runs, so the allowed signers are written then.
-    services.frisket.policy = {
+    services.quoin.policy = {
       fileName = "chase.json";
       courier.enable = true;
     };
-    environment.etc."frisket/allowed_signers".source = lib.mkForce "/run/allowed_signers";
+    environment.etc."quoin/allowed_signers".source = lib.mkForce "/run/allowed_signers";
 
     users.users.dan = { isNormalUser = true; uid = 1000; group = "users"; linger = true; };
 
@@ -84,14 +86,15 @@ in
       Slice = "app.slice";
     };
 
-    # frisket.service's own hardening, from nix/module.nix.
-    systemd.services.frisket = {
-      environment.SSH_AUTH_SOCK = "/run/frisket-signer/agent";
+    # A daemon trusted with its own logins, hardened as one would be: the
+    # signer knows it by its unit and its main process alone.
+    systemd.services.porter = {
+      environment.SSH_AUTH_SOCK = "/run/quoin-signer/agent";
       serviceConfig = {
         Type = "oneshot";
         User = "dan";
         Group = "users";
-        ExecStart = "${pkgs.runtimeShell} /run/frisket-standin";
+        ExecStart = "${pkgs.runtimeShell} /run/porter-standin";
         UMask = "0077";
         ProtectSystem = "strict";
         ProtectHome = "read-only";
@@ -130,7 +133,7 @@ in
     import json
     import shlex
 
-    agent = "SSH_AUTH_SOCK=/run/frisket-signer/agent"
+    agent = "SSH_AUTH_SOCK=/run/quoin-signer/agent"
     env = f"-E {agent} -E SHELL=${pkgs.bash}/bin/bash -E PATH=/run/current-system/sw/bin"
 
     def as_dan(cmd):
@@ -150,11 +153,11 @@ in
         return [e for e in map(json.loads, out.splitlines()) if e["event"] == kind]
 
     def decisions():
-        out = machine.succeed("journalctl -u frisket-signer.service -o cat")
+        out = machine.succeed("journalctl -u quoin-signer.service -o cat")
         return [d for d in (json.loads(l) for l in out.splitlines() if l.startswith("{")) if d.get("msg") == "decision"]
 
     def journal_has(text):
-        machine.succeed(f"journalctl -u frisket-signer.service -o cat | grep -F {shlex.quote(text)}")
+        machine.succeed(f"journalctl -u quoin-signer.service -o cat | grep -F {shlex.quote(text)}")
 
     # A long-lived dan process fed lines through a FIFO: the tab types each
     # into bash on its pty, the claude runs each as bash would a script.
@@ -175,13 +178,13 @@ in
         machine.wait_until_succeeds(f"systemctl -M dan@ --user is-active {where}.service")
 
     def standin(script):
-        machine.succeed(f"printf '%s\\n' {shlex.quote(script)} > /run/frisket-standin && chmod 0644 /run/frisket-standin")
+        machine.succeed(f"printf '%s\\n' {shlex.quote(script)} > /run/porter-standin && chmod 0644 /run/porter-standin")
 
     def source_is(src):
-        machine.wait_until_succeeds("journalctl -u frisket-signer.service -o cat | grep '\"msg\":\"decision\"' "
+        machine.wait_until_succeeds("journalctl -u quoin-signer.service -o cat | grep '\"msg\":\"decision\"' "
                                     f"| tail -n1 | grep -qF '\"source\":\"{src}\"'")
 
-    machine.wait_for_unit("frisket-signer.socket")
+    machine.wait_for_unit("quoin-signer.socket")
     machine.wait_for_unit("sshd.service")
     machine.wait_for_unit("sshd-beta.service")
     machine.wait_for_unit("user@1000.service")
@@ -189,7 +192,7 @@ in
     with subtest("with no key files the identities are empty and serve is up"):
         out = machine.fail(as_dan("ssh-add -l 2>&1"))
         assert "no identities" in out, out
-        machine.succeed("systemctl is-active frisket-signer.service")
+        machine.succeed("systemctl is-active quoin-signer.service")
 
     with subtest("dan cannot open /dev/tpmrm0"):
         assert "tss" not in machine.succeed("id -nG dan").split()
@@ -197,18 +200,18 @@ in
 
     with subtest("a key made by stock ssh-tpm-keygen loads"):
         machine.succeed("SSH_ASKPASS_REQUIRE=never ssh-tpm-keygen -f /root/id_ecdsa -C dan@machine </dev/null")
-        machine.succeed("install -o ssh-signer -g ssh-signer -m 0600 /root/id_ecdsa.tpm /var/lib/frisket-signer/")
+        machine.succeed("install -o ssh-signer -g ssh-signer -m 0600 /root/id_ecdsa.tpm /var/lib/quoin-signer/")
         machine.succeed("install -d -o dan -g users -m 0700 /home/dan/.ssh")
         machine.succeed("install -o dan -g users -m 0600 /root/id_ecdsa.pub /home/dan/.ssh/authorized_keys")
-        machine.succeed("systemctl restart frisket-signer.service")
+        machine.succeed("systemctl restart quoin-signer.service")
         out = machine.succeed(as_dan("ssh-add -l"))
         assert "dan@machine (ECDSA)" in out, out
 
-    with subtest("frisket-signer-keygen writes a new key into new/"):
-        machine.succeed("systemctl start frisket-signer-keygen.service")
-        out = machine.succeed("ssh-keygen -l -f /var/lib/frisket-signer/new/id_ecdsa.pub")
+    with subtest("quoin-signer-keygen writes a new key into new/"):
+        machine.succeed("systemctl start quoin-signer-keygen.service")
+        out = machine.succeed("ssh-keygen -l -f /var/lib/quoin-signer/new/id_ecdsa.pub")
         assert "(ECDSA)" in out, out
-        machine.succeed("test \"$(stat -c %U /var/lib/frisket-signer/new/id_ecdsa.tpm)\" = ssh-signer")
+        machine.succeed("test \"$(stat -c %U /var/lib/quoin-signer/new/id_ecdsa.tpm)\" = ssh-signer")
 
     machine.succeed("install -d -o dan -g users -m 0755 /run/fakegalley")
     galley("answer 0")
@@ -265,12 +268,12 @@ in
         d = decisions()[-1]
         assert d["namespace"] == "file" and d["anchor"]["Comm"] == "ssh-keygen", d
 
-    with subtest("a raw ssh-keygen -Y sign in a frisket-policy namespace is refused unasked"):
+    with subtest("a raw ssh-keygen -Y sign in a quoin-policy namespace is refused unasked"):
         machine.succeed("rm -f /run/claude/msg.sig")
         asked = len(events("question"))
-        assert run("claude", "ssh-keygen -Y sign -f /run/claude/key.pub -n 'frisket-policy:~/Projects/foo' /run/claude/msg") != 0
+        assert run("claude", "ssh-keygen -Y sign -f /run/claude/key.pub -n 'quoin-policy:~/Projects/foo' /run/claude/msg") != 0
         assert len(events("question")) == asked
-        journal_has("a frisket-policy namespace is never signed raw")
+        journal_has("a quoin-policy namespace is never signed raw")
         machine.succeed("test ! -e /run/claude/msg.sig")
 
     with subtest("ssh -A: the far-side sign is asked as forwarded, from a claude and from a tab"):
@@ -293,34 +296,34 @@ in
         assert events("question")[-1]["title"] == "ssh to beta"
         machine.succeed("kill $(cat /run/claude/ssh.pid)")
         machine.wait_until_succeeds(f"test $(grep -c '\"event\":\"close\"' /run/fakegalley/log) -gt {closed}")
-        machine.wait_until_succeeds("journalctl -u frisket-signer.service -o cat | grep -q '\"source\":\"hung up\"'")
+        machine.wait_until_succeeds("journalctl -u quoin-signer.service -o cat | grep -q '\"source\":\"hung up\"'")
 
-    with subtest("frisket's main process signs without a question; a child exec'd in it is asked"):
+    with subtest("a login signer's main process signs without a question; a child exec'd in it is asked"):
         galley("answer 0")
         asked = len(events("question"))
-        standin("exec ${shapes}/ssh/frisket -n alpha true")
-        machine.succeed("systemctl start frisket.service")
+        standin("exec ${shapes}/ssh/porter -n alpha true")
+        machine.succeed("systemctl start porter.service")
         assert len(events("question")) == asked
-        source_is("frisket")
-        standin("exec ${shapes}/sh/frisket -c '${pkgs.openssh}/bin/ssh -n beta true; exit $?'")
-        machine.succeed("systemctl start frisket.service")
+        source_is("unit")
+        standin("exec ${shapes}/sh/porter -c '${pkgs.openssh}/bin/ssh -n beta true; exit $?'")
+        machine.succeed("systemctl start porter.service")
         q = events("question")[-1]
         assert len(events("question")) == asked + 1 and q["title"] == "ssh to beta", q
         source_is("galley")
 
-    with subtest("a cgroup move from dan's user@ session into frisket.service is refused"):
-        standin("exec ${shapes}/ssh/frisket -n alpha sleep 600")
-        machine.succeed("systemctl start --no-block frisket.service")
-        machine.wait_until_succeeds("test -n \"$(cat /sys/fs/cgroup/system.slice/frisket.service/cgroup.procs)\"")
-        assert run("claude", "echo $BASHPID > /sys/fs/cgroup/system.slice/frisket.service/cgroup.procs") != 0
+    with subtest("a cgroup move from dan's user@ session into porter.service is refused"):
+        standin("exec ${shapes}/ssh/porter -n alpha sleep 600")
+        machine.succeed("systemctl start --no-block porter.service")
+        machine.wait_until_succeeds("test -n \"$(cat /sys/fs/cgroup/system.slice/porter.service/cgroup.procs)\"")
+        assert run("claude", "echo $BASHPID > /sys/fs/cgroup/system.slice/porter.service/cgroup.procs") != 0
         assert run("claude", "grep -q user@1000.service /proc/$BASHPID/cgroup") == 0
-        machine.succeed("systemctl stop frisket.service")
+        machine.succeed("systemctl stop porter.service")
 
-    with subtest("with galley absent: frisket and a live grant sign, everything else is refused"):
+    with subtest("with galley absent: the login signer and a live grant sign, everything else is refused"):
         machine.succeed("systemctl -M dan@ --user stop galley.service")
-        standin("exec ${shapes}/ssh/frisket -n alpha true")
-        machine.succeed("systemctl start frisket.service")
-        source_is("frisket")
+        standin("exec ${shapes}/ssh/porter -n alpha true")
+        machine.succeed("systemctl start porter.service")
+        source_is("unit")
         assert run("claude", "ssh -n alpha true") == 0
         source_is("grant")
         assert run("claude", "ssh -n beta true") != 0
@@ -347,7 +350,7 @@ in
 
     with subtest("ssh.hosts.alpha = allow: a claude's login to alpha is silent, beta and a forwarded sign to alpha are asked"):
         machine.succeed("/run/booted-system/specialisation/hosts/bin/switch-to-configuration test")
-        machine.succeed("${lib.getExe self.packages.${system}.frisket-signer} check /etc/frisket-signer/config.json")
+        machine.succeed("${lib.getExe' self.packages.${system}.quoin "quoin-signer"} check /etc/quoin/signer.json")
         asked = len(events("question"))
         assert run("claude", "ssh -n alpha true") == 0
         assert len(events("question")) == asked
@@ -360,9 +363,9 @@ in
         qs = [q for q in events("question")[asked:] if q["title"] == "ssh to alpha"]
         assert len(qs) == 1 and "forwarded" in qs[0]["text"].split("\n"), qs
 
-    frisket = "${lib.getExe self.packages.${system}.frisket}"
+    quoin = "${lib.getExe' self.packages.${system}.quoin "quoin"}"
     foo = "/home/dan/Projects/foo"
-    verify = (f"ssh-keygen -Y verify -f /etc/frisket/allowed_signers -I dan -n 'frisket-policy:~/Projects/foo' "
+    verify = (f"ssh-keygen -Y verify -f /etc/quoin/allowed_signers -I dan -n 'quoin-policy:~/Projects/foo' "
               f"-s {foo}/chase.json.sig < {foo}/chase.json")
 
     def as_dan_in_foo(cmd):
@@ -370,8 +373,8 @@ in
 
     with subtest("a claude in a repository is offered Always, which signs the rule into its chase.json"):
         key = " ".join(machine.succeed("cat /root/id_ecdsa.pub").split()[:2])
-        machine.succeed(f"echo 'dan namespaces=\"frisket-policy:*\" {key}' > /run/allowed_signers")
-        machine.succeed(f"{frisket} policy signers /etc/frisket/allowed_signers")
+        machine.succeed(f"echo 'dan namespaces=\"quoin-policy:*\" {key}' > /run/allowed_signers")
+        machine.succeed(f"{quoin} policy signers /etc/quoin/allowed_signers")
         machine.succeed(f"install -d -o dan -g users /home/dan/Projects {foo}")
         as_dan_in_foo("git init -q")
         assert run("claude", f"cd {foo}") == 0
@@ -388,7 +391,7 @@ in
         assert machine.succeed(f"cat {foo}/chase.json") == q["diff"]["new"]
         assert machine.succeed(f"stat -c %U {foo}/chase.json {foo}/chase.json.sig").split() == ["dan", "dan"]
         machine.succeed(verify)
-        machine.succeed(f"runuser -u dan -- {frisket} policy verify {foo}/chase.json")
+        machine.succeed(f"runuser -u dan -- {quoin} policy verify {foo}/chase.json")
         journal_has('"msg":"always"')
 
     with subtest("the signed rule then signs the claude's login to beta unasked, as project"):
@@ -418,9 +421,9 @@ in
         source_is("galley")
         journal_has('"msg":"project policy ignored"')
 
-    with subtest("frisket policy sign shows the widening against the signed file and signs it"):
+    with subtest("quoin policy sign shows the widening against the signed file and signs it"):
         asked = len(events("question"))
-        assert run("tab", f"cd {foo} && {frisket} policy sign chase.json") == 0
+        assert run("tab", f"cd {foo} && {quoin} policy sign chase.json") == 0
         q = events("question")[-1]
         assert len(events("question")) == asked + 1 and q["title"] == "sign ~/Projects/foo/chase.json", q
         assert not q["always"] and [b["label"] for b in q["buttons"]] == ["Refuse", "Allow once"], q
@@ -435,18 +438,18 @@ in
 
     with subtest("policy-sign from another user namespace, as a sandbox's would be, is refused unasked"):
         asked = len(events("question"))
-        out = machine.fail(as_dan(f"bwrap --unshare-user --dev-bind / / -- {frisket} policy sign {foo}/chase.json 2>&1"))
+        out = machine.fail(as_dan(f"bwrap --unshare-user --dev-bind / / -- {quoin} policy sign {foo}/chase.json 2>&1"))
         assert "another user namespace" in out, out
         assert len(events("question")) == asked
         journal_has("policy-sign: pid")
 
     with subtest("a cleared TPM: the key is listed, a sign fails as cleared, serve stays up"):
-        pid = machine.succeed("systemctl show -P MainPID frisket-signer.service").strip()
+        pid = machine.succeed("systemctl show -P MainPID quoin-signer.service").strip()
         machine.succeed("tpm2_clear -T device:/dev/tpmrm0")
         assert "dan@machine (ECDSA)" in machine.succeed(as_dan("ssh-add -l"))
         assert run("tab", "ssh -n alpha true") != 0
         journal_has("TPM cleared or a different chip")
-        assert machine.succeed("systemctl show -P MainPID frisket-signer.service").strip() == pid
-        machine.succeed("systemctl is-active frisket-signer.service")
+        assert machine.succeed("systemctl show -P MainPID quoin-signer.service").strip() == pid
+        machine.succeed("systemctl is-active quoin-signer.service")
   '';
 }

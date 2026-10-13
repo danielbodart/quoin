@@ -1,4 +1,4 @@
-# frisket-sudo
+# quoin-sudo
 
 Gates sudo when no terminal is asking. Each such sudo is one galley item
 showing the resolved command. Outside a window it is a dialog that takes
@@ -9,7 +9,7 @@ password.
 ```
 claude> sudo systemctl restart foo  # galley: "sudo systemctl restart foo"
                                     #   Password [••••]  Remember for [15] [minutes ▾]  [Cancel] [Allow]
-frisket-sudo: password remembered for this claude until 16:40
+quoin-sudo: password remembered for this claude until 16:40
 
 claude> sudo journalctl -u foo      # galley: "sudo journalctl -u foo"   [Refuse] [Allow]
 
@@ -23,9 +23,9 @@ $ sudo id                           # in a terminal: stock sudo, the gate never 
 
 ```nix
 {
-  imports = [ inputs.frisket.nixosModules.sudoGate ];
+  imports = [ inputs.quoin.nixosModules.sudo ];
 
-  services.frisket.sudoGate = {
+  services.quoin.sudo = {
     enable = true;
     forUser = "alice";
   };
@@ -50,47 +50,47 @@ previous generation.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `enable` | `false` | The plugin line in `/etc/sudo.conf`, the PAM rule, the `frisket-sudo` PAM service, the sudoers defaults and the gate. |
+| `enable` | `false` | The plugin line in `/etc/sudo.conf`, the PAM rule, the `quoin-sudo` PAM service, the sudoers defaults and the gate. |
 | `forUser` | `"dan"` | The gated user, and whose galley is asked. |
 | `remoteKeys` | `[ ]` | SSH public key lines whose signature approves a remote sudo (below); empty is remote mode off. |
 | `danger.<pattern>` | `{ }` | Danger rules beside the built-in catalogue (below): `reason` for any command the pattern matches, `args.<glob>` for one with an argument the glob matches. |
 | `exec.<pattern>.answer` | | The host's exec rules ([Rules](#rules)): `allow`, `ask` or `refuse` for a resolved command the pattern matches. |
 | `exec.<pattern>.runAs` | `"root"` | The user the rule's commands run as; a sudo as anyone else is not the rule's. |
 
-With `services.frisket.policy.courier.enable`, the file also gets
-`policy`: the courier's socket, `/etc/frisket/allowed_signers` and the
+With `services.quoin.policy.courier.enable`, the file also gets
+`policy`: the courier's socket, `/etc/quoin/allowed_signers` and the
 policy file's name, and the gate reads the project a sudo is run in.
 
-The options are written to `/etc/frisket-sudo/config.json`, which
-`frisket-sudo serve -config` reads, keys named as the options are:
+The options are written to `/etc/quoin/sudo.json`, which
+`quoin-sudo serve -config` reads, keys named as the options are:
 
 ```json
 { "forUser": "alice", "remoteKeys": [ "ecdsa-sha2-nistp256 AAAA… alice@laptop" ],
   "danger": { "reboot **": { "reason": "reboots this machine" },
               "systemctl **": { "args": { "postgresql*": "touches the database" } } },
   "exec": { "/run/current-system/sw/bin/journalctl **": { "runAs": "root", "answer": "allow" } },
-  "policy": { "courier": "/run/frisket-policy/sock",
-              "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json" } }
+  "policy": { "courier": "/run/quoin-courier/sock",
+              "allowedSigners": "/etc/quoin/allowed_signers", "fileName": "chase.json" } }
 ```
 
 A key it does not know (a rule's spelt in another case included), a
 remote key that does not parse, or a danger or exec rule that does not
-compile stops it starting; the build runs `frisket-sudo
-check` on the file first, and a change restarts the gate. `frisket-sudo
+compile stops it starting; the build runs `quoin-sudo
+check` on the file first, and a change restarts the gate. `quoin-sudo
 schema` prints its JSON Schema.
 
 The module sets `Defaults noninteractive_auth` and `Defaults
 timestamp_type=tty`, and evaluation fails when:
 
 - sudo's auth stack is anything but the helper, `pam_unix`, `pam_deny`,
-  or the `frisket-sudo` PAM service's anything but `pam_unix`, `pam_deny`;
+  or the `quoin-sudo` PAM service's anything but `pam_unix`, `pam_deny`;
 - sudoers sets another `timestamp_type` (`!tty_tickets` included), or
   `rootpw`, `targetpw`, `runaspw`, `intercept` or `log_subcmds` (as
   options or as `INTERCEPT:` and `LOG_SUBCMDS:` tags);
 - `kernel.yama.ptrace_scope` is 0.
 
 The plugin is built against `security.sudo.package`, and `/etc/sudo.conf`
-is built only once `frisket-sudo-check-plugin` has loaded the plugin as sudo
+is built only once `quoin-sudo-check-plugin` has loaded the plugin as sudo
 would and found an audit plugin for this sudo's version.
 
 ## What is gated
@@ -112,7 +112,7 @@ the one checked. `sudo -n` gets the dialog too.
   keyed on the claude and pinned to the galley process that took the
   password; it ends at its time, or when either exits. An Allow from any
   other galley process is a refusal.
-- **Danger**: a `systemctl` on `frisket*`, `galley*`, `sshd*`,
+- **Danger**: a `systemctl` on `quoin*`, `galley*`, `sshd*`,
   `nftables*` or `debug-shell*`, a command matching a `danger` rule, a
   program outside `/run/current-system/sw/bin`, `/run/wrappers/bin` and
   `/etc/profiles/per-user/<user>/bin`, or a `<shell> -c STRING` (`sh`,
@@ -120,7 +120,10 @@ the one checked. `sudo -n` gets the dialog too.
   or `env` whose inner command is either or cannot be read. A shell run
   any other way (`bash -lc`, `sh -c -- …`, `bash script.sh`, a bare
   `sudo -s`) cannot be read. Shown with galley's danger banner, always
-  asked, never opens a window; its dialog has no time field.
+  asked, never opens a window; its dialog has no time field. The
+  catalogue's units are quoin's own and those any host has; a host adds
+  the units that guard it besides, frisket's say, as `danger` rules:
+  `danger."systemctl **".args."frisket*" = "touches a unit that guards this machine";`
 - **Warning**: a process chain cut short, or launched straight from
   `systemd --user`. No time field.
 - Variables outside the allowlist (`HOME`, `PATH`, `TERM`, `LANG`,
@@ -129,7 +132,7 @@ the one checked. `sudo -n` gets the dialog too.
 A refusal is sudo's own line:
 
 ```
-sudo: frisket_audit: unable to log accept event: cancelled
+sudo: quoin_audit: unable to log accept event: cancelled
 ```
 
 A sudo that is killed withdraws its item; until it runs the command, sudo
@@ -141,11 +144,11 @@ The check-in alone is bounded: a gate that does not answer it within
 ## Rules
 
 Exec rules answer a sudo before any dialog: the host's, from
-`services.frisket.sudoGate.exec`, and the project's, from the `sudo`
+`services.quoin.sudo.exec`, and the project's, from the `sudo`
 section of the signed `chase.json` the sudo is run in.
 
 ```nix
-services.frisket.sudoGate.exec = {
+services.quoin.sudo.exec = {
   "/run/current-system/sw/bin/journalctl **".answer = "allow";
   "/run/current-system/sw/bin/journalctl ** [arg --vacuum*]".answer = "ask";
   "/run/current-system/sw/bin/reboot **".answer = "refuse";
@@ -195,7 +198,7 @@ claude> sudo systemctl stop sshd    # danger: the dialog, whatever a rule says
   `sudo.exec` is merged over the host's with RFC 7396's merge patch: a
   pattern the host has is replaced, `null` takes it away, a new one is
   added. A project may set `exec` alone. The file counts only when
-  `chase.json.sig` verifies against `/etc/frisket/allowed_signers` in
+  `chase.json.sig` verifies against `/etc/quoin/allowed_signers` in
   the project's namespace; unsigned, not verifying, or with a `sudo`
   section a project may not set, it is ignored with one
   `project policy ignored` journal line, and the host's rules decide. No
@@ -205,7 +208,7 @@ claude> sudo systemctl stop sshd    # danger: the dialog, whatever a rule says
   answered `ask` has `source` `galley` and `rule_source`.
 
 There is no Always for sudo: a project's rule is written into
-`chase.json` by hand, or by an agent, and signed (`chase sign`).
+`chase.json` by hand, or by an agent, and signed (`quoin policy sign`).
 
 ## Remote mode
 
@@ -221,10 +224,10 @@ under an ssh login with a forwarded agent is approved by a signature from
 one of those keys:
 
 ```nix
-services.frisket.sudoGate.remoteKeys = [ "ecdsa-sha2-nistp256 AAAA… alice@laptop" ];
+services.quoin.sudo.remoteKeys = [ "ecdsa-sha2-nistp256 AAAA… alice@laptop" ];
 ```
 
-The keys are written to `/etc/frisket-sudo/config.json` and `remote` is
+The keys are written to `/etc/quoin/sudo.json` and `remote` is
 added to the plugin line; there are no new PAM lines. The client needs
 only `ForwardAgent` for the host.
 
@@ -232,7 +235,7 @@ The gate classifies the command as for a local sudo and hands the plugin a
 message to sign: a nonce, the host's keys, the user, the runas user, the
 cwd, the resolved command, the level and the reasons. The plugin connects
 to the forwarded agent as the invoking user and asks for a plain signature
-with the first listed key the agent holds. frisket-signer on the client
+with the first listed key the agent holds. quoin-signer on the client
 asks every time, naming the host from `/etc/ssh/ssh_known_hosts`, and
 refuses unless its forwarded session is bound to one of the message's host
 keys; no grant or window skips it. A stock agent holding a listed key
@@ -244,14 +247,14 @@ terminal is required". The agent refusing, failing or holding no listed
 key refuses the sudo:
 
 ```
-frisket-sudo: the forwarded agent refused
-sudo: frisket_audit: unable to log accept event
+quoin-sudo: the forwarded agent refused
+sudo: quoin_audit: unable to log accept event
 ```
 
 ## Journal
 
 ```
-journalctl -u frisket-sudo -o cat | jq 'select(.msg == "decision")'
+journalctl -u quoin-sudo -o cat | jq 'select(.msg == "decision")'
 ```
 
 One `decision` record per answer: the chain, the anchor, the program and
@@ -294,22 +297,22 @@ the gate has answered, so the gate never sees it.
 
 ## Recovery
 
-**No-tty sudo says `frisket-sudo: gate not running`.** The gate socket is
+**No-tty sudo says `quoin-sudo: gate not running`.** The gate socket is
 down, or the gate is not answering (crash-looping or stuck); sudo in a
 terminal works as before.
 
 ```
-systemctl status frisket-sudo.socket frisket-sudo.service
-sudo systemctl restart frisket-sudo.socket
+systemctl status quoin-sudo.socket quoin-sudo.service
+sudo systemctl restart quoin-sudo.socket
 ```
 
 **No-tty sudo hangs.** galley is not answering. Kill the sudo
-(`kill -KILL`), then check `journalctl -u frisket-sudo`.
+(`kill -KILL`), then check `journalctl -u quoin-sudo`.
 
 **`no one to ask; use a terminal`.** galley is not running, or the socket
 at `/run/galley-ask/<user>.sock` is not galley's.
 
-**Rollback.** `services.frisket.sudoGate.enable = false` removes the
+**Rollback.** `services.quoin.sudo.enable = false` removes the
 plugin line, the PAM rule and service and the sudoers defaults; set
 `SUDO_ASKPASS` back if you use one.
 

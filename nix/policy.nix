@@ -1,6 +1,6 @@
 # nixosModules.policy: a project's signed policy file. allowedSigners is
-# rendered, root's, to /etc/frisket/allowed_signers, the file every verifier
-# checks a policy's signature against; courier is frisket-policy, running as
+# rendered, root's, to /etc/quoin/allowed_signers, the file every verifier
+# checks a policy's signature against; courier is quoin-courier, running as
 # forUser with no network, which finds the policy file above a process's
 # working directory and replaces it, for the system units named its peers.
 # The signer and the sudo gate import this module and name themselves peers.
@@ -8,11 +8,9 @@ self:
 { config, lib, pkgs, utils, ... }:
 
 let
-  cfg = config.services.frisket.policy;
+  cfg = config.services.quoin.policy;
   inherit (lib) mkOption types;
-  system = pkgs.stdenv.hostPlatform.system;
-  package = self.packages.${system}.frisket-policy;
-  frisket = self.packages.${system}.frisket;
+  package = self.packages.${pkgs.stdenv.hostPlatform.system}.quoin;
 
   signer = types.submodule {
     options = {
@@ -28,38 +26,38 @@ let
       };
     };
   };
-  line = s: if builtins.isString s then s else ''${s.principal} namespaces="frisket-policy:*" ${s.key}'';
+  line = s: if builtins.isString s then s else ''${s.principal} namespaces="quoin-policy:*" ${s.key}'';
 
   # Read as every verifier will read it, when the system is built.
-  allowedSigners = pkgs.runCommand "frisket-allowed-signers"
+  allowedSigners = pkgs.runCommand "quoin-allowed-signers"
     {
-      nativeBuildInputs = [ frisket ];
+      nativeBuildInputs = [ package ];
       text = lib.concatMapStrings (s: line s + "\n") cfg.allowedSigners;
       passAsFile = [ "text" ];
     } ''
     cp "$textPath" "$out"
-    frisket policy signers "$out"
+    quoin policy signers "$out"
   '';
 
   user = config.users.users.${cfg.courier.forUser};
 
   # Checked as serve will read it, when the system is built.
-  configFile = pkgs.runCommand "frisket-policy-config.json"
+  configFile = pkgs.runCommand "quoin-courier-config.json"
     {
       nativeBuildInputs = [ package ];
       config = builtins.toJSON {
         inherit (cfg) fileName;
-        allowedSigners = "/etc/frisket/allowed_signers";
+        allowedSigners = "/etc/quoin/allowed_signers";
         inherit (cfg.courier) peers;
       };
       passAsFile = [ "config" ];
     } ''
     cp "$configPath" "$out"
-    frisket-policy check "$out"
+    quoin-courier check "$out"
   '';
 in
 {
-  options.services.frisket.policy = {
+  options.services.quoin.policy = {
     fileName = mkOption {
       type = types.str;
       example = "chase.json";
@@ -75,14 +73,14 @@ in
       example = [{ principal = "dan"; key = "ecdsa-sha2-nistp256 AAAA…"; }];
       description = ''
         Whose signature makes a project's policy count, written root's to
-        /etc/frisket/allowed_signers. A `{ principal, key }` becomes
-        `principal namespaces="frisket-policy:*" key`, so the key signs
+        /etc/quoin/allowed_signers. A `{ principal, key }` becomes
+        `principal namespaces="quoin-policy:*" key`, so the key signs
         policies and nothing else; a string is an allowed_signers line as it
         is, in OpenSSH's format, but a cert-authority line is refused.
       '';
     };
     courier = {
-      enable = lib.mkEnableOption "frisket-policy, the courier that reads and writes forUser's project policy files for the signer and the sudo gate";
+      enable = lib.mkEnableOption "quoin-courier, the courier that reads and writes forUser's project policy files for the signer and the sudo gate";
       forUser = mkOption {
         type = types.str;
         default = "dan";
@@ -91,7 +89,7 @@ in
       peers = mkOption {
         type = types.attrsOf types.str;
         default = { };
-        example = { "frisket-signer.service" = "ssh-signer"; };
+        example = { "quoin-signer.service" = "ssh-signer"; };
         description = ''
           The system units allowed to call the courier, each to the user it
           runs as: a caller must be that user, in that unit's cgroup. The
@@ -103,17 +101,17 @@ in
 
   config = lib.mkMerge [
     (lib.mkIf (cfg.allowedSigners != [ ] || cfg.courier.enable) {
-      environment.etc."frisket/allowed_signers".source = allowedSigners;
+      environment.etc."quoin/allowed_signers".source = allowedSigners;
     })
 
     (lib.mkIf cfg.courier.enable {
-      environment.etc."frisket-policy/config.json".source = configFile;
+      environment.etc."quoin/courier.json".source = configFile;
 
-      systemd.sockets.frisket-policy = {
-        description = "frisket-policy courier socket";
+      systemd.sockets.quoin-courier = {
+        description = "quoin-courier socket";
         wantedBy = [ "sockets.target" ];
         socketConfig = {
-          ListenStream = "/run/frisket-policy/sock";
+          ListenStream = "/run/quoin-courier/sock";
           # Each caller's uid and cgroup are checked on accept; the mode only
           # lets the peers, each its own user, connect at all.
           SocketMode = "0666";
@@ -122,14 +120,14 @@ in
         };
       };
 
-      systemd.services.frisket-policy = {
-        description = "frisket-policy: project policy files, carried from ${cfg.courier.forUser}'s home";
-        requires = [ "frisket-policy.socket" ];
-        after = [ "frisket-policy.socket" ];
+      systemd.services.quoin-courier = {
+        description = "quoin-policy: project policy files, carried from ${cfg.courier.forUser}'s home";
+        requires = [ "quoin-courier.socket" ];
+        after = [ "quoin-courier.socket" ];
         startLimitIntervalSec = 0;
         restartTriggers = [ configFile ];
         serviceConfig = {
-          ExecStart = utils.escapeSystemdExecArgs [ (lib.getExe package) "serve" "-config" "/etc/frisket-policy/config.json" ];
+          ExecStart = utils.escapeSystemdExecArgs [ (lib.getExe' package "quoin-courier") "serve" "-config" "/etc/quoin/courier.json" ];
           Type = "notify";
           NotifyAccess = "main";
           User = cfg.courier.forUser;

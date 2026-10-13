@@ -1,7 +1,8 @@
-# frisket-signer
+# quoin-signer
 
-An SSH agent whose keys live in the TPM. It signs without asking for
-frisket's main process, for a terminal tab ssh-ing to a host in
+An SSH agent whose keys live in the TPM. It signs without asking for the
+main process of a unit you trust with its own logins, for a terminal tab
+ssh-ing to a host in
 `/etc/ssh/ssh_known_hosts`, for any program's login to a host you allow by
 name, here or in the project's signed policy file, and for git's commit
 signatures. Everything else is asked in galley: Allow once, Allow for a time
@@ -28,16 +29,16 @@ claude> git push                    # in ~/Projects/foo, courier on
 
 ```nix
 {
-  imports = [ inputs.frisket.nixosModules.signer ];
+  imports = [ inputs.quoin.nixosModules.signer ];
 
-  services.frisket.signer = {
+  services.quoin.signer = {
     enable = true;
     forUser = "alice";
   };
 }
 ```
 
-Then point the user's `SSH_AUTH_SOCK` at `/run/frisket-signer/agent`, and
+Then point the user's `SSH_AUTH_SOCK` at `/run/quoin-signer/agent`, and
 let galley take questions from the signer:
 
 ```nix
@@ -50,9 +51,9 @@ its key directory. Start it, then move a key made by stock `ssh-tpm-keygen`
 into place:
 
 ```
-sudo systemctl start frisket-signer
-sudo install -o ssh-signer -g ssh-signer -m 0600 ~/.ssh/id_ecdsa.tpm /var/lib/frisket-signer/
-sudo systemctl restart frisket-signer
+sudo systemctl start quoin-signer
+sudo install -o ssh-signer -g ssh-signer -m 0600 ~/.ssh/id_ecdsa.tpm /var/lib/quoin-signer/
+sudo systemctl restart quoin-signer
 ssh-add -l
 ```
 
@@ -68,6 +69,8 @@ in `tss`. Log out and in after leaving it.
 | `terminal` | `"allow"` | A tab's direct sign to a host in `ssh_known_hosts`: `allow` or `ask`. |
 | `sshsig.<namespace>` | `{ git = "allow"; }` | A direct SSHSIG sign in that namespace: `allow` or `ask`. Any other namespace is asked, Allow once. |
 | `ssh.hosts.<name>` | `{ }` | A direct login from any program to the host key listed under `name` in `ssh_known_hosts`, or under a name the pattern `name` matches: `allow` or `ask`. |
+| `loginSigners` | `[ ]` | System units, `name.service`, whose main process, run as `forUser`, has its logins signed unasked. |
+| `policySigners` | `[ ]` | System units whose main process, run as `forUser`, may send a `policy-sign` marked `approved`, which is signed unasked, and nothing else. |
 
 `ssh.hosts` keys may be patterns: `*` alone is one label, `*` within a
 label any run of it (`*-ap`), and `**` as the first label one or more
@@ -75,35 +78,62 @@ labels (`**.bodar.com`). A literal key beats a pattern; between patterns,
 more whole literal labels win, then more literal bytes in the labels with
 a `*`, then one without `**`; at a tie `ask` wins.
 
-With `services.frisket.policy.courier.enable` (see [policy.md](policy.md)),
+With `services.quoin.policy.courier.enable` (see [policy.md](policy.md)),
 the signer also reads the asking program's project policy file, offers
-Always, and serves `frisket policy sign`. It needs no option of its own:
-the module writes the `policy` section below from `services.frisket.policy`.
+Always, and serves `quoin policy sign`. It needs no option of its own:
+the module writes the `policy` section below from `services.quoin.policy`.
 
-The options are written to `/etc/frisket-signer/config.json`, which
-`frisket-signer serve -config` reads, keys named as the options are:
+The options are written to `/etc/quoin/signer.json`, which
+`quoin-signer serve -config` reads, keys named as the options are:
 
 ```json
 { "forUser": "alice", "terminal": "allow", "sshsig": { "git": "allow" },
   "ssh": { "hosts": { "github.com": "allow" } },
-  "policy": { "courier": "/run/frisket-policy/sock",
-              "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json" } }
+  "loginSigners": [ "frisket.service" ], "policySigners": [ "frisket.service" ],
+  "policy": { "courier": "/run/quoin-courier/sock",
+              "allowedSigners": "/etc/quoin/allowed_signers", "fileName": "chase.json" } }
 ```
 
 A key it does not know, a value other than `allow` or `ask`, a host key
-that is not a name or a pattern of one, or a `policy` path that is not
-absolute stops it starting; the build runs `frisket-signer check` on the file first.
-`frisket-signer schema` prints its JSON Schema.
+that is not a name or a pattern of one, a `policy` path that is not
+absolute, or a unit that is not `name.service`, is listed twice or whose
+name is longer than 15 bytes stops it starting; the build runs
+`quoin-signer check` on the file first. `quoin-signer schema` prints its
+JSON Schema.
 
-frisket's main process is always trusted, a forwarded sign (`ssh -A`) is
-always asked, and nothing is refused unasked but an SSHSIG in a
-`frisket-policy` namespace, which `check` also refuses as an `sshsig` key,
-and a `policy-sign` from another user namespace, or from frisket's main
-process without `approved`. With `approved`, frisket's main process's
-`policy-sign` is signed unasked: it sends only a rule a person answered
-Always in its own question about a session's request, which showed the
-change ([routes.md](routes.md#always)); `approved` from anyone else is
-refused.
+### Trusted units
+
+The signer trusts no program for being a particular program: only the main
+process of a system unit the host names, run as `forUser`, and only for
+what the list it is in says. A main process is known by its unit's cgroup,
+its pid being the unit's `MainPID`, and its comm, which the kernel cuts at
+15 bytes; so a child the main process starts, a process moved into the
+unit's cgroup from elsewhere (which the kernel refuses a user anyway), and
+a unit whose name could never be a comm are none of them trusted.
+
+- **`loginSigners`**: a unit whose main process decides for itself which
+  machines a session it runs may log into, such as an egress proxy with SSH
+  routes of its own. Its bound and unbound logins are signed with no
+  question, logged as source `unit`, galley or no galley.
+- **`policySigners`**: a unit whose main process asks a person about a
+  change to a project's policy file in a question of its own, with the
+  diff, and sends the new bytes as a `policy-sign` marked `approved`. That
+  is signed with no question of the signer's, the person's answer being the
+  approval; there is no receipt, so this is the trust. A `policy-sign` from
+  it without `approved` is refused unasked, and `approved` from anyone
+  else is refused. Its logins are asked as anyone's are unless it is in
+  `loginSigners` too.
+
+frisket is the program these were made for: its main process holds a
+sandbox's SSH routes and asks about a session's requests itself, so a host
+running it sets both to `[ "frisket.service" ]`. They are two lists because
+they are two trusts: a unit that logs a session into machines need not be
+one whose word that a person approved a change is taken.
+
+Beyond these, a forwarded sign (`ssh -A`) is always asked, and nothing is
+refused unasked but an SSHSIG in a `quoin-policy` namespace, which `check`
+also refuses as an `sshsig` key, and a `policy-sign` from another user
+namespace.
 
 ## What is asked
 
@@ -111,11 +141,11 @@ In order, the first that applies:
 
 1. A peer other than `forUser`: refused.
 2. A login whose session or host key is not the one ssh bound: refused.
-   So is an SSHSIG in any namespace starting `frisket-policy`, from
-   anyone, frisket included, with the journal reason "a frisket-policy
+   So is an SSHSIG in any namespace starting `quoin-policy`, from anyone,
+   a trusted unit included, with the journal reason "a quoin-policy
    namespace is never signed raw": a project's policy is signed only where
    the signer sees its bytes (see [policy.md](policy.md)).
-3. frisket's main process: signed.
+3. A login from the main process of a unit in `loginSigners`: signed.
 4. A tab's shell running ssh, git, scp, sftp or rsync, to a known host,
    not forwarded: `terminal`.
 5. Any program's login, not forwarded and its process chain not cut
@@ -134,7 +164,7 @@ In order, the first that applies:
 The project is the asking program's (the anchor's): the courier reads its
 working directory up to the nearest policy file, as
 [policy.md](policy.md) says. Its file applies only when its signature
-verifies against `/etc/frisket/allowed_signers` in the project's namespace
+verifies against `/etc/quoin/allowed_signers` in the project's namespace
 and its `signer` section sets only `ssh.hosts` and `sshsig`; otherwise it is
 ignored, with one `project policy ignored` line per file, and the decision
 is as if there were none. So is a cut chain, a chain with no anchor, and a
@@ -153,22 +183,22 @@ current one with `signer.ssh.hosts."<name>": "allow"` merged in, canonical
 (`{"version": 2}` when there is none), `<name>` the host key's first name in
 `ssh_known_hosts`, and says "Always allows `<name>` from `~/Projects/foo`,
 signed into its chase.json." On Always the signer signs the new file in
-`frisket-policy:<root>`, has the courier write it and its `.sig` if the file
+`quoin-policy:<root>`, has the courier write it and its `.sig` if the file
 is still the one read, and signs the login. If the write fails, a change
 made meanwhile say, the login is still signed, once, and the journal's
 `always` line and a galley notification say the rule was not saved. Always
 grants nothing beyond the file: a later login is decided by it.
 
-`frisket policy sign FILE` signs a file you edited, a rule widened to a
-pattern say, through the agent extension `policy-sign@frisket`: galley shows
+`quoin policy sign FILE` signs a file you edited, a rule widened to a
+pattern say, through the agent extension `policy-sign@quoin` (package
+`policysign`, which the signer's server and every client import): galley shows
 the diff against the bytes the old `.sig` verifies over (`-old FILE`, else
 git's `HEAD`), or against nothing, saying why, with Refuse and Allow once
 only, and on Allow `FILE.sig` is written. FILE must already be canonical
-(`frisket policy fmt`). It is refused unasked to frisket's main process,
-which serves sandboxes, unless it sends the request `approved` -- a rule
-answered Always in its own question -- and to a process in another user
-namespace; a sandbox's git signing socket refuses every extension in any
-case.
+(`quoin policy fmt`). It is refused unasked to a policy signer's main
+process unless it sends the request `approved` -- a rule answered Always in
+its own question -- and to a process in another user namespace, as a
+sandbox's would be.
 Allow once is the only choice for a sign ssh did not bind to a host, for an
 SSHSIG, for a program launched straight from `systemd --user` or the
 terminal server, and for a process chain cut short; galley shows the last
@@ -183,11 +213,11 @@ journal's anchor, are still ssh-keygen's.
 ## Journal
 
 ```
-journalctl -u frisket-signer -o cat | jq 'select(.msg == "decision")'
+journalctl -u quoin-signer -o cat | jq 'select(.msg == "decision")'
 ```
 
 One `decision` record per sign: the chain, the anchor, the destination, the
-key, the outcome, and its `source` (`frisket`, `terminal`, `host`,
+key, the outcome, and its `source` (`unit`, `terminal`, `host`,
 `project`, `sshsig`, `grant`, `galley`, `always`, `nobody`, `hung up`),
 with `project`, `project_digest` and `project_applies` when a project was
 read. An `always` line says whether Always's file was `written` or `not
@@ -196,30 +226,10 @@ line with the TPM's cause; ssh itself only says `agent refused operation`.
 
 ## Commit signing from a sandbox
 
-frisket serves a policy's sandboxes an agent socket that only signs git
-commits:
-
-```nix
-services.frisket = {
-  gitSigning.agent = "/run/frisket-signer/agent";
-  policies.strict.gitSigning = true;
-};
-```
-
-```
-$ ls -l /run/frisket-sign/strict
-srw------- 1 alice users 0 ... agent
-```
-
-Bind `/run/frisket-sign/<policy>` into the sandbox at the same path and set
-`SSH_AUTH_SOCK=/run/frisket-sign/<policy>/agent`. The socket lists the
-signer's keys and passes on a sign whose data is an SSHSIG in the `git`
-namespace, which the signer makes under `sshsig.git`. Every other sign,
-key management, lock and every extension, `session-bind` among them, is
-refused. Only `services.frisket.user` may connect, from any user namespace.
-The directory is kept across a restart of frisket, so a bind of it stays
-good. Each request is one `decision` line in frisket's journal, with the
-policy, the peer's pid, the namespace and the outcome.
+A program that serves sandboxes may pass git's commit signatures on to the
+signer through a socket of its own that refuses everything else; frisket's
+per-policy git signing socket is one (see frisket's docs/signer.md). The
+signer sees such a sign as the serving program's, made under `sshsig.git`.
 
 ## Recovery
 
@@ -227,10 +237,10 @@ policy, the peer's pid, the namespace and the outcome.
 cleared or a different chip`. Make a new key and swap it in:
 
 ```
-sudo systemctl start frisket-signer-keygen
-sudo cat /var/lib/frisket-signer/new/id_ecdsa.pub
-sudo mv /var/lib/frisket-signer/new/id_ecdsa.tpm /var/lib/frisket-signer/
-sudo systemctl restart frisket-signer
+sudo systemctl start quoin-signer-keygen
+sudo cat /var/lib/quoin-signer/new/id_ecdsa.pub
+sudo mv /var/lib/quoin-signer/new/id_ecdsa.tpm /var/lib/quoin-signer/
+sudo systemctl restart quoin-signer
 ```
 
 Authorize the new public key wherever the old one was (GitHub, your
@@ -246,5 +256,5 @@ counter to decay, or clear it with the TPM's lockout auth:
 **Reinstall.** A key file from before is listed but never signs on another
 chip or a cleared one; run keygen as above.
 
-**Rollback.** `services.frisket.signer.enable = false`, and point
+**Rollback.** `services.quoin.signer.enable = false`, and point
 `SSH_AUTH_SOCK` back at your previous agent.

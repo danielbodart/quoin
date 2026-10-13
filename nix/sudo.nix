@@ -1,16 +1,16 @@
-# nixosModules.sudoGate: frisket-sudo, asking forUser's galley about every
+# nixosModules.sudo: quoin-sudo, asking forUser's galley about every
 # sudo of forUser's that has no terminal.
 self:
 { config, lib, pkgs, utils, ... }:
 
 let
-  cfg = config.services.frisket.sudoGate;
-  policy = config.services.frisket.policy;
+  cfg = config.services.quoin.sudo;
+  policy = config.services.quoin.policy;
   inherit (lib) mkOption types;
   system = pkgs.stdenv.hostPlatform.system;
   plugin = (import ./sudo-zig.nix { inherit pkgs; sudo = config.security.sudo.package; }).package;
-  package = self.packages.${system}.frisket-sudo;
-  gate = lib.getExe package;
+  package = self.packages.${system}.quoin;
+  gate = lib.getExe' package "quoin-sudo";
   sudoConf = import ./sudo-conf.nix { inherit pkgs plugin; } {
     version = config.security.sudo.package.version;
     user = cfg.forUser;
@@ -30,7 +30,7 @@ let
   ptraceScope = config.boot.kernel.sysctl."kernel.yama.ptrace_scope" or null;
 
   # Checked as serve will read it, when the system is built.
-  configFile = pkgs.runCommand "frisket-sudo-config.json"
+  configFile = pkgs.runCommand "quoin-sudo-config.json"
     {
       nativeBuildInputs = [ package ];
       config = builtins.toJSON ({
@@ -41,22 +41,22 @@ let
         # The signed policy of the project a sudo is run in, read through
         # the courier: its sudo.exec merged over exec.
         policy = {
-          courier = "/run/frisket-policy/sock";
-          allowedSigners = "/etc/frisket/allowed_signers";
+          courier = "/run/quoin-courier/sock";
+          allowedSigners = "/etc/quoin/allowed_signers";
           inherit (policy) fileName;
         };
       });
       passAsFile = [ "config" ];
     } ''
     cp "$configPath" "$out"
-    frisket-sudo check "$out"
+    quoin-sudo check "$out"
   '';
 in
 {
   imports = [ self.nixosModules.policy ];
 
-  options.services.frisket.sudoGate = {
-    enable = lib.mkEnableOption "frisket-sudo: the plugin line in sudo.conf, the PAM rule, the frisket-sudo PAM service, the sudoers defaults and the gate";
+  options.services.quoin.sudo = {
+    enable = lib.mkEnableOption "quoin-sudo: the plugin line in sudo.conf, the PAM rule, the quoin-sudo PAM service, the sudoers defaults and the gate";
     forUser = mkOption {
       type = types.str;
       default = "dan";
@@ -119,7 +119,7 @@ in
         the program's absolute path, then words, `*` for one, `**` last for
         any number, and optionally ` [arg GLOB]` after it, an arg rule,
         which only asks or refuses. A literal pattern beats a pattern, a
-        narrower one a wider one. With services.frisket.policy.courier on,
+        narrower one a wider one. With services.quoin.policy.courier on,
         the signed chase.json of the project a sudo is run in has its
         `sudo.exec` merged over these, RFC 7396's way. No rule ever
         decides a danger or a warning, a command the gate did not see
@@ -131,16 +131,16 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    services.frisket.policy.courier.peers."frisket-sudo.service" = "sudo-gate";
+    services.quoin.policy.courier.peers."quoin-sudo.service" = "sudo-gate";
 
     assertions = [
       {
-        assertion = authStack "sudo" == [ "frisket-sudo-pam" "unix" "deny" ];
-        message = "a conversation-free auth module would run on every terminal sudo -n: sudo's auth rules are ${toString (authStack "sudo")}, not frisket-sudo-pam unix deny";
+        assertion = authStack "sudo" == [ "quoin-sudo-pam" "unix" "deny" ];
+        message = "a conversation-free auth module would run on every terminal sudo -n: sudo's auth rules are ${toString (authStack "sudo")}, not quoin-sudo-pam unix deny";
       }
       {
-        assertion = authStack "frisket-sudo" == [ "unix" "deny" ];
-        message = "only the password may verify the sudo dialog: the frisket-sudo PAM service's auth rules are ${toString (authStack "frisket-sudo")}, not unix deny";
+        assertion = authStack "quoin-sudo" == [ "unix" "deny" ];
+        message = "only the password may verify the sudo dialog: the quoin-sudo PAM service's auth rules are ${toString (authStack "quoin-sudo")}, not unix deny";
       }
       {
         assertion = timestampTypes == [ "tty" ];
@@ -148,7 +148,7 @@ in
       }
       {
         assertion = refused == [ ];
-        message = "frisket-sudo cannot work with sudoers setting ${toString refused}";
+        message = "quoin-sudo cannot work with sudoers setting ${toString refused}";
       }
       {
         assertion = ptraceScope == null || lib.toInt (toString ptraceScope) >= 1;
@@ -156,7 +156,7 @@ in
       }
       {
         assertion = !policy.courier.enable || policy.courier.forUser == cfg.forUser;
-        message = "services.frisket.policy.courier.forUser (${policy.courier.forUser}) is not services.frisket.sudoGate.forUser (${cfg.forUser}): the gate reads the projects of the user it gates.";
+        message = "services.quoin.policy.courier.forUser (${policy.courier.forUser}) is not services.quoin.sudo.forUser (${cfg.forUser}): the gate reads the projects of the user it gates.";
       }
     ];
 
@@ -168,26 +168,26 @@ in
     users.groups.sudo-gate.gid = 952;
 
     environment.etc."sudo.conf".source = sudoConf;
-    environment.etc."frisket-sudo/config.json".source = configFile;
+    environment.etc."quoin/sudo.json".source = configFile;
 
     security.sudo.extraConfig = ''
       Defaults noninteractive_auth
       Defaults timestamp_type=tty
     '';
 
-    security.pam.services.frisket-sudo = { };
-    security.pam.services.sudo.rules.auth.frisket-sudo-pam = {
+    security.pam.services.quoin-sudo = { };
+    security.pam.services.sudo.rules.auth.quoin-sudo-pam = {
       order = auth.unix.order - 10;
       control = "sufficient";
       modulePath = "${config.security.pam.package}/lib/security/pam_exec.so";
-      args = [ "seteuid" "quiet" "${plugin}/bin/frisket-sudo-pam" cfg.forUser ];
+      args = [ "seteuid" "quiet" "${plugin}/bin/quoin-sudo-pam" cfg.forUser ];
     };
 
-    systemd.sockets.frisket-sudo = {
-      description = "frisket-sudo gate socket";
+    systemd.sockets.quoin-sudo = {
+      description = "quoin-sudo gate socket";
       wantedBy = [ "sockets.target" ];
       socketConfig = {
-        ListenStream = "/run/frisket-sudo/gate.sock";
+        ListenStream = "/run/quoin-sudo/gate.sock";
         SocketUser = "sudo-gate";
         SocketMode = "0600";
         DirectoryMode = "0700";
@@ -195,15 +195,15 @@ in
       };
     };
 
-    systemd.services.frisket-sudo = {
-      description = "frisket-sudo: sudo with no terminal, asked through galley";
-      requires = [ "frisket-sudo.socket" ];
-      wants = lib.optional policy.courier.enable "frisket-policy.socket";
-      after = [ "frisket-sudo.socket" ] ++ lib.optional policy.courier.enable "frisket-policy.socket";
+    systemd.services.quoin-sudo = {
+      description = "quoin-sudo: sudo with no terminal, asked through galley";
+      requires = [ "quoin-sudo.socket" ];
+      wants = lib.optional policy.courier.enable "quoin-courier.socket";
+      after = [ "quoin-sudo.socket" ] ++ lib.optional policy.courier.enable "quoin-courier.socket";
       startLimitIntervalSec = 0;
       restartTriggers = [ configFile ];
       serviceConfig = {
-        ExecStart = utils.escapeSystemdExecArgs [ gate "serve" "-config" "/etc/frisket-sudo/config.json" ];
+        ExecStart = utils.escapeSystemdExecArgs [ gate "serve" "-config" "/etc/quoin/sudo.json" ];
         Type = "notify";
         NotifyAccess = "main";
         User = "sudo-gate";

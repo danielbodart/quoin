@@ -1,5 +1,7 @@
 # frisket-signer and frisket-sudo: plan
 
+> History: written while these lived in frisket; they are now quoin-signer and quoin-sudo, and every name below has changed (see [signer.md](signer.md) and [sudo.md](sudo.md)).
+
 Two small gatekeepers beside frisket, both asking the person through galley:
 
 - **frisket-signer** holds the SSH keys that live in the TPM. It signs silently for frisket, for a terminal tab ssh-ing to a known host and for git's commit signatures, and asks for everything else.
