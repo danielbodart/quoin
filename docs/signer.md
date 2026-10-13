@@ -228,7 +228,8 @@ line with the TPM's cause; ssh itself only says `agent refused operation`.
 
 A program that serves sandboxes may pass git's commit signatures on to the
 signer through a socket of its own that refuses everything else; frisket's
-per-policy git signing socket is one (see frisket's docs/signer.md). The
+per-policy git signing socket is one (see
+https://github.com/danielbodart/frisket#commit-signing-from-a-sandbox). The
 signer sees such a sign as the serving program's, made under `sshsig.git`.
 
 ## Recovery
