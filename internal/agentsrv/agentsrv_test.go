@@ -67,7 +67,10 @@ type harness struct {
 	log        *lockedBuffer
 	github     ssh.Signer
 	server     ssh.Signer
-	frisket    atomic.Bool
+	// loginSigner and policySigner say whether the peer is the main
+	// process of a unit listed as one.
+	loginSigner  atomic.Bool
+	policySigner atomic.Bool
 }
 
 func newHarness(t *testing.T, keys int, configure func(*Server)) *harness {
@@ -95,7 +98,8 @@ func newHarness(t *testing.T, keys int, configure func(*Server)) *harness {
 		who: func(*net.UnixConn) (*peer.Requester, error) { return <-h.requesters, nil },
 		ask: h.ask,
 	}
-	h.s.frisket = func(*peer.Requester) bool { return h.frisket.Load() }
+	h.s.loginSigner = func(*peer.Requester) bool { return h.loginSigner.Load() }
+	h.s.policySigner = func(*peer.Requester) bool { return h.policySigner.Load() }
 	for range keys {
 		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
@@ -302,7 +306,7 @@ func TestAForgedBindIsRefused(t *testing.T) {
 
 func TestASignForAnotherSessionThanTheLastBindIsRefused(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	h.frisket.Store(true)
+	h.loginSigner.Store(true)
 	c := h.dial(claude(100))
 	if err := c.bind(t, h.github, []byte("first"), false); err != nil {
 		t.Fatal(err)
@@ -321,7 +325,7 @@ func TestASignForAnotherSessionThanTheLastBindIsRefused(t *testing.T) {
 
 func TestAHostboundRequestWhoseHostKeyIsNotTheBoundKeyIsRefused(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	h.frisket.Store(true)
+	h.loginSigner.Store(true)
 	c := h.dial(claude(100))
 	sid := []byte("session")
 	if err := c.bind(t, h.github, sid, false); err != nil {
@@ -405,7 +409,7 @@ func (p *panicky) Sign(r io.Reader, digest []byte, opts crypto.SignerOpts) ([]by
 
 func TestAPanicInOneRequestDoesNotStopTheNext(t *testing.T) {
 	h := newHarness(t, 1, func(s *Server) { s.Keys[0].Signer = &panicky{Signer: s.Keys[0].Signer} })
-	h.frisket.Store(true)
+	h.loginSigner.Store(true)
 	c := h.dial(claude(100))
 	data := userauthData([]byte("sid"), h.key(0), nil)
 	if err := wait(t, c.signAsync(h.key(0), data)); err == nil {
@@ -634,7 +638,7 @@ func TestACutTabChainIsNeverSilent(t *testing.T) {
 
 func TestARequestNamingAnotherKeyIsRefused(t *testing.T) {
 	h := newHarness(t, 2, nil)
-	h.frisket.Store(true)
+	h.loginSigner.Store(true)
 	c := h.dial(claude(100))
 	if err := c.bind(t, h.github, []byte("sid"), false); err != nil {
 		t.Fatal(err)
@@ -678,9 +682,9 @@ func TestAForwardedGitSignatureIsAsked(t *testing.T) {
 	wait(t, done)
 }
 
-func TestFrisketsMainProcessIsSilentForUserauthOnly(t *testing.T) {
+func TestALoginSignersMainProcessIsSilentForUserauthOnly(t *testing.T) {
 	h := newHarness(t, 1, func(s *Server) { s.SSHSIG = nil })
-	h.frisket.Store(true)
+	h.loginSigner.Store(true)
 	c := h.dial(claude(100))
 	if err := wait(t, c.signAsync(h.key(0), userauthData([]byte("sid"), h.key(0), nil))); err != nil {
 		t.Fatal(err)
@@ -690,7 +694,30 @@ func TestFrisketsMainProcessIsSilentForUserauthOnly(t *testing.T) {
 	done := c.signAsync(h.key(0), git)
 	h.next().reply <- answered{}
 	if err := wait(t, done); err == nil {
-		t.Error("frisket's SSHSIG was signed without a question")
+		t.Error("a login signer's SSHSIG was signed without a question")
+	}
+}
+
+// A policy signer is trusted for an approved policy-sign and nothing else:
+// its logins are asked as anyone's are.
+func TestAPolicySignersLoginsAreAsked(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	h.policySigner.Store(true)
+	c := h.dial(claude(100))
+	done := c.signAsync(h.key(0), userauthData([]byte("sid"), h.key(0), nil))
+	h.next().reply <- answered{}
+	if err := wait(t, done); err == nil {
+		t.Error("a policy signer's login was signed without a question")
+	}
+}
+
+// With no units listed, the default, no process is a login or a policy
+// signer, whatever it is.
+func TestNoUnitsListedIsNobody(t *testing.T) {
+	s := &Server{UID: uid}
+	r := &peer.Requester{Chain: []peer.Link{{Pid: 2, PPid: 1, Comm: "proxy"}}, PeerUID: uid, PPid: 1, CgroupID: 1}
+	if s.mainOfAny(nil)(r) || s.mainOfAny([]string{})(r) {
+		t.Error("no units matched a process")
 	}
 }
 
@@ -818,7 +845,8 @@ func FuzzNoAgentMessageCrashesTheParser(f *testing.F) {
 	s := &Server{
 		User: "dan", UID: uid, Terminal: Allow, SSHSIG: map[string]Rule{"git": Allow},
 		Keys: []Key{{Signer: k, Comment: "dan@test"}}, KnownHosts: "/nonexistent", Grants: grant.New(),
-		frisket: func(*peer.Requester) bool { return false },
+		loginSigner:  func(*peer.Requester) bool { return false },
+		policySigner: func(*peer.Requester) bool { return false },
 		ask: func(context.Context, string, galleyask.Question) (galleyask.Answer, error) {
 			return galleyask.Answer{}, nil
 		},
@@ -838,11 +866,11 @@ func FuzzNoAgentMessageCrashesTheParser(f *testing.F) {
 }
 
 // A raw SSHSIG in a project policy's namespace is refused unasked, even
-// listed as allow and from frisket, with its own reason in the journal.
+// listed as allow and from a login signer, with its own reason in the journal.
 func TestARawSignInAPolicyNamespaceIsRefusedUnasked(t *testing.T) {
 	for _, ns := range []string{"frisket-policy:~/Projects/foo", "frisket-policy:/srv/x", "frisket-policy", "frisket-policyx"} {
 		h := newHarness(t, 1, func(s *Server) { s.SSHSIG = map[string]Rule{ns: Allow, "git": Allow} })
-		h.frisket.Store(true)
+		h.loginSigner.Store(true)
 		data := append([]byte("SSHSIG"), ssh.Marshal(struct {
 			Namespace, Reserved, Hash string
 			Digest                    []byte

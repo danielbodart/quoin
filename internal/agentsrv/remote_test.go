@@ -83,7 +83,7 @@ func appendString(b []byte, s string) []byte {
 
 func TestARemoteSudoMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	h.frisket.Store(true)
+	h.loginSigner.Store(true)
 	host := string(h.server.PublicKey().Marshal())
 	build := func(nonce string, hosts []string, level string, extra string) []byte {
 		b := appendString(nil, sudomsg.Magic)
@@ -138,9 +138,9 @@ func TestARemoteSudoSignIsNeverSilentNorGranted(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	h.frisket.Store(true)
-	ask("frisket's main process", h.forwarded(h.github), answered{})
-	h.frisket.Store(false)
+	h.loginSigner.Store(true)
+	ask("a login signer's main process", h.forwarded(h.github), answered{})
+	h.loginSigner.Store(false)
 
 	tabConn := h.dial(tab())
 	if err := tabConn.bind(t, h.github, []byte("sid"), true); err != nil {
@@ -192,7 +192,7 @@ func TestTheRemoteSudoQuestionNamesTheHostTheCommandAndTheLevel(t *testing.T) {
 
 func TestAnotherForwardedBoundSignIsAskedAllowOnceAndAnUnboundOneRefused(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	h.frisket.Store(true)
+	h.loginSigner.Store(true)
 	challenge := make([]byte, 32)
 	rand.Read(challenge)
 

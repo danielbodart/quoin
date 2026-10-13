@@ -42,7 +42,8 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 		"forUser": "dan", "terminal": "ask",
 		"sshsig": {"git": "allow", "file": "ask"},
 		"ssh": {"hosts": {"github.com": "allow", "gitlab.com": "ask", "*.example": "allow", "**.bodar.com": "ask"}},
-		"policy": {"courier": "/run/frisket-policy/sock", "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json"}
+		"policy": {"courier": "/run/frisket-policy/sock", "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json"},
+		"loginSigners": ["proxy.service"], "policySigners": ["proxy.service", "helper.service"]
 	}`)
 	c, err := loadConfig(path)
 	if err != nil {
@@ -53,7 +54,8 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 		SSHSIG: map[string]agentsrv.Rule{"git": agentsrv.Allow, "file": agentsrv.Ask},
 		SSH: sshConfig{Hosts: map[string]agentsrv.Rule{"github.com": agentsrv.Allow, "gitlab.com": agentsrv.Ask,
 			"*.example": agentsrv.Allow, "**.bodar.com": agentsrv.Ask}},
-		Policy: &policyConfig{Courier: "/run/frisket-policy/sock", AllowedSigners: "/etc/frisket/allowed_signers", FileName: "chase.json"},
+		Policy:       &policyConfig{Courier: "/run/frisket-policy/sock", AllowedSigners: "/etc/frisket/allowed_signers", FileName: "chase.json"},
+		LoginSigners: []string{"proxy.service"}, PolicySigners: []string{"proxy.service", "helper.service"},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Errorf("got %+v", c)
@@ -89,6 +91,12 @@ func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
 		`{"forUser": "dan", "terminal": "allow", "ssh": {"host": {"github.com": "allow"}}}`,
 		`{"forUser": "dan", "terminal": "allow", "hosts": {"github.com": "allow"}}`,
 		`{"forUser": "dan", "terminal": "allow"} {}`,
+		`{"forUser": "dan", "terminal": "allow", "loginSigners": ["proxy"]}`,
+		`{"forUser": "dan", "terminal": "allow", "loginSigners": [""]}`,
+		`{"forUser": "dan", "terminal": "allow", "loginSigners": ["a/b.service"]}`,
+		`{"forUser": "dan", "terminal": "allow", "policySigners": ["proxy.service", "proxy.service"]}`,
+		`{"forUser": "dan", "terminal": "allow", "policySigners": ["a-very-long-name.service"]}`,
+		`{"forUser": "dan", "terminal": "allow", "policySigners": "proxy.service"}`,
 	} {
 		if err := runCheck([]string{writeConfig(t, bad)}); err == nil {
 			t.Errorf("%s was accepted", bad)

@@ -415,16 +415,16 @@ func (c *conn) policySignErr(contents []byte) ([]byte, error) {
 	if err != nil {
 		return nil, refuse(err.Error())
 	}
-	// frisket's main process serves sandboxes: it asks for nothing but a
-	// rule a person answered Always in its own question, which showed the
-	// change, and that is signed unasked. Nobody else may say a change
+	// A policy signer's main process serves sandboxes: it asks for nothing
+	// but a rule a person answered Always in its own question, which showed
+	// the change, and that is signed unasked. Nobody else may say a change
 	// was approved.
-	fromFrisket := c.s.frisket(c.r)
+	fromSigner := c.s.policySigner(c.r)
 	switch {
-	case fromFrisket && !p.Approved:
-		return nil, refuse("frisket's main process signs only what a person answered Always, approved")
-	case !fromFrisket && p.Approved:
-		return nil, refuse("only frisket's main process may send a change approved")
+	case fromSigner && !p.Approved:
+		return nil, refuse("a policy signer's main process signs only what a person answered Always, approved")
+	case !fromSigner && p.Approved:
+		return nil, refuse("only a policy signer's main process may send a change approved")
 	}
 	switch {
 	case !filepath.IsAbs(p.Root) || filepath.Clean(p.Root) != p.Root:

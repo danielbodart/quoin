@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -57,16 +58,27 @@ type Server struct {
 	// Policy, when set, reads the project policy of the process that asks
 	// and offers Always; nil reads none.
 	Policy *Policy
+	// LoginSigners are system units, each "name.service", whose main
+	// process, run as User, has its logins signed unasked: a proxy that
+	// logs a sandbox's session into the machines its policy names, and has
+	// decided each command itself before it asks.
+	LoginSigners []string
+	// PolicySigners are system units whose main process, run as User, may
+	// send a policy-sign approved, which is signed unasked: the person
+	// answered Always in a question of its own that showed the change. It
+	// may send nothing but that, and nobody else may send approved.
+	PolicySigners []string
 
-	who     func(*net.UnixConn) (*peer.Requester, error)
-	frisket func(*peer.Requester) bool
-	ask     func(context.Context, string, galleyask.Question) (galleyask.Answer, error)
-	read    func(ctx context.Context, pid int, start uint64) (*courier.Response, error)
-	write   func(ctx context.Context, root, oldDigest string, b, sig []byte) error
-	notify  func(ctx context.Context, user, text string) error
-	inHost  func(*net.UnixConn) error
-	now     func() time.Time
-	layers  *layerCache
+	who          func(*net.UnixConn) (*peer.Requester, error)
+	loginSigner  func(*peer.Requester) bool
+	policySigner func(*peer.Requester) bool
+	ask          func(context.Context, string, galleyask.Question) (galleyask.Answer, error)
+	read         func(ctx context.Context, pid int, start uint64) (*courier.Response, error)
+	write        func(ctx context.Context, root, oldDigest string, b, sig []byte) error
+	notify       func(ctx context.Context, user, text string) error
+	inHost       func(*net.UnixConn) error
+	now          func() time.Time
+	layers       *layerCache
 }
 
 const maxBinds = 16
@@ -86,12 +98,24 @@ var errRefused = errors.New("refused")
 // sees the bytes it signs, never as a blob whose message is a hash.
 const reasonPolicyNamespace = "a frisket-policy namespace is never signed raw"
 
+// mainOfAny is whether a peer is the main process of one of units, run as
+// the user served. No units, the default, is nobody.
+func (s *Server) mainOfAny(units []string) func(*peer.Requester) bool {
+	units = slices.Clone(units)
+	return func(r *peer.Requester) bool {
+		return slices.ContainsFunc(units, func(u string) bool { return r.IsMainOf(u, s.UID) })
+	}
+}
+
 func (s *Server) Serve(ln *net.UnixListener) error {
 	if s.who == nil {
 		s.who = peer.FromConn
 	}
-	if s.frisket == nil {
-		s.frisket = func(r *peer.Requester) bool { return r.IsMainOf("frisket.service", s.UID) }
+	if s.loginSigner == nil {
+		s.loginSigner = s.mainOfAny(s.LoginSigners)
+	}
+	if s.policySigner == nil {
+		s.policySigner = s.mainOfAny(s.PolicySigners)
 	}
 	if s.ask == nil {
 		s.ask = galleyask.Ask
@@ -328,8 +352,8 @@ func (c *conn) decide(req *request) verdict {
 	if req.class == classRemoteSudo || req.class == classForwarded {
 		return c.ask(req)
 	}
-	if (req.class == classBound || req.class == classUnbound) && c.s.frisket(r) {
-		return verdict{sign: true, source: "frisket"}
+	if (req.class == classBound || req.class == classUnbound) && c.s.loginSigner(r) {
+		return verdict{sign: true, source: "unit"}
 	}
 	if req.class == classBound && !req.fwd && r.Terminal && !r.Cut && req.known && c.s.Terminal == Allow {
 		return verdict{sign: true, source: "terminal"}

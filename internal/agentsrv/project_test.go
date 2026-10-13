@@ -522,11 +522,11 @@ func TestPolicySignRefusesWhatItMayNotSign(t *testing.T) {
 			t.Errorf("%s: %+v", name, r)
 		}
 	}
-	h.frisket.Store(true)
-	if r := policySign(t, h.dial(claude(100)), good); !strings.Contains(r.Error, "frisket's main process") {
-		t.Errorf("frisket: %+v", r)
+	h.policySigner.Store(true)
+	if r := policySign(t, h.dial(claude(100)), good); !strings.Contains(r.Error, "a policy signer's main process") {
+		t.Errorf("policy signer: %+v", r)
 	}
-	h.frisket.Store(false)
+	h.policySigner.Store(false)
 	sandboxed = true
 	if r := policySign(t, h.dial(tab()), good); !strings.Contains(r.Error, "another user namespace") {
 		t.Errorf("sandboxed: %+v", r)
@@ -540,17 +540,17 @@ func TestPolicySignRefusesWhatItMayNotSign(t *testing.T) {
 	}
 }
 
-// frisket's main process sends a rule a person answered Always in its own
-// question as approved, and it is signed unasked; nobody else's approved
-// is taken, and frisket's main process sends nothing else.
-func TestPolicySignSignsFrisketsApprovedUnasked(t *testing.T) {
+// A policy signer's main process sends a rule a person answered Always in
+// its own question as approved, and it is signed unasked; nobody else's
+// approved is taken, and a policy signer's main process sends nothing else.
+func TestPolicySignSignsAPolicySignersApprovedUnasked(t *testing.T) {
 	fc := &fakeCourier{}
 	h := newHarness(t, 1, withPolicy(fc))
 	ns := "frisket-policy:~/Projects/foo"
 	approved := policysign.Request{Root: foo, Name: "chase.json", New: []byte(project(`{"a.example": "allow"}`)), Approved: true}
 	signers, _ := projpolicy.ReadAllowedSigners(h.s.Policy.AllowedSigners)
 
-	h.frisket.Store(true)
+	h.policySigner.Store(true)
 	r := policySign(t, h.dial(claude(100)), approved)
 	if _, err := projpolicy.Verify(approved.New, r.Sig, ns, signers, "dan", time.Now()); err != nil || r.Error != "" {
 		t.Errorf("approved: %+v: %v", r, err)
@@ -566,9 +566,9 @@ func TestPolicySignSignsFrisketsApprovedUnasked(t *testing.T) {
 		t.Errorf("not canonical: %+v", r)
 	}
 
-	h.frisket.Store(false)
+	h.policySigner.Store(false)
 	for _, who := range []*peer.Requester{tab(), claude(100)} {
-		if r := policySign(t, h.dial(who), approved); r.Sig != nil || !strings.Contains(r.Error, "only frisket's main process") {
+		if r := policySign(t, h.dial(who), approved); r.Sig != nil || !strings.Contains(r.Error, "only a policy signer's main process") {
 			t.Errorf("approved from another: %+v", r)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/danielbodart/quoin/internal/agentsrv"
@@ -25,6 +26,13 @@ type config struct {
 	// Policy, when set, reads the asking process's project policy through
 	// the courier, offers Always, and serves policy-sign.
 	Policy *policyConfig `json:"policy"`
+	// LoginSigners are system units whose main process, run as forUser,
+	// has its logins signed unasked; PolicySigners those whose main process
+	// may send a policy-sign approved, signed unasked, and nothing else.
+	// Both are empty unless the host names a unit: nothing is trusted for
+	// being a particular program.
+	LoginSigners  []string `json:"loginSigners"`
+	PolicySigners []string `json:"policySigners"`
 }
 
 type policyConfig struct {
@@ -89,6 +97,11 @@ func (c *config) validate() error {
 			return fmt.Errorf("ssh.hosts.%s: %w", name, err)
 		}
 	}
+	for k, units := range map[string][]string{"loginSigners": c.LoginSigners, "policySigners": c.PolicySigners} {
+		if err := checkUnits(units); err != nil {
+			return fmt.Errorf("%s: %w", k, err)
+		}
+	}
 	if p := c.Policy; p != nil {
 		for k, path := range map[string]string{"courier": p.Courier, "allowedSigners": p.AllowedSigners} {
 			if !filepath.IsAbs(path) || filepath.Clean(path) != path {
@@ -101,6 +114,29 @@ func (c *config) validate() error {
 		case strings.HasSuffix(f, projpolicy.SigSuffix):
 			return fmt.Errorf("policy.fileName: %q ends in %s, which names its signature", f, projpolicy.SigSuffix)
 		}
+	}
+	return nil
+}
+
+// unitName is a service's name as systemd spells one.
+var unitName = regexp.MustCompile(`^[A-Za-z0-9:_.-]+\.service$`)
+
+// checkUnits refuses a unit that is no service's name, one listed twice,
+// and one whose main process could never be recognised: a process is known
+// as a unit's main process by its comm, which the kernel cuts at 15 bytes,
+// so a longer name would be a setting that silently does not apply.
+func checkUnits(units []string) error {
+	seen := map[string]bool{}
+	for _, u := range units {
+		switch {
+		case !unitName.MatchString(u):
+			return fmt.Errorf("%q is not a service's name, name.service", u)
+		case len(strings.TrimSuffix(u, ".service")) > 15:
+			return fmt.Errorf("%q: a main process is known by its comm, which is cut at 15 bytes, so %q could never be recognised", u, strings.TrimSuffix(u, ".service"))
+		case seen[u]:
+			return fmt.Errorf("%q is listed twice", u)
+		}
+		seen[u] = true
 	}
 	return nil
 }
@@ -148,6 +184,14 @@ const schema = `{
         }
       }
     },
+    "loginSigners": {
+      "description": "System units whose main process, run as forUser, has its logins signed unasked. None by default.",
+      "$ref": "#/$defs/units"
+    },
+    "policySigners": {
+      "description": "System units whose main process, run as forUser, may send a policy-sign approved, which is signed unasked, and nothing else; approved from anyone else is refused. None by default.",
+      "$ref": "#/$defs/units"
+    },
     "policy": {
       "description": "A project's signed policy: read through the courier for the process that asks, Always offered, and policy-sign served.",
       "type": "object",
@@ -161,7 +205,12 @@ const schema = `{
     }
   },
   "$defs": {
-    "rule": { "enum": ["allow", "ask"] }
+    "rule": { "enum": ["allow", "ask"] },
+    "units": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9:_.-]{1,15}\\.service$" }
+    }
   }
 }
 `
