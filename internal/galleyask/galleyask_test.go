@@ -373,15 +373,18 @@ func TestAlwaysIsPutWithItsDiffAndAnsweredAlways(t *testing.T) {
 	}
 }
 
-func TestAGalleyOlderThanAlwaysIsAskedWithoutIt(t *testing.T) {
+// A galley that does not speak the item's protocol version is no one to
+// ask: the question is put once, and never again without what it offered.
+func TestAGalleyThatRefusesTheVersionIsNoOneToAsk(t *testing.T) {
 	name, items := startGalleys(t, `{"error":"protocol version 5 is not one from 1 to 4"}`, `{"answer":"extra"}`)
 	a, err := Ask(context.Background(), name, alwaysQuestion)
-	if err != nil || !a.Allowed || a.Always {
+	if !errors.Is(err, ErrNobody) || a.Allowed {
 		t.Fatalf("got %+v, %v", a, err)
 	}
 	<-items
-	if again := string(<-items); strings.Contains(again, `"always"`) || strings.Contains(again, `"diff"`) ||
-		strings.Contains(again, "Always allows") || !strings.HasPrefix(again, `{"galley":3,`) {
+	select {
+	case again := <-items:
 		t.Errorf("put again as %s", again)
+	default:
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/danielbodart/galley/wire"
@@ -71,25 +70,9 @@ var (
 	}
 )
 
-// Ask puts q to name's galley. A galley older than the diff and Always
-// (protocol version 5) refuses the item; it is put again without them, so
-// the question is still asked, only with no Always to answer.
+// Ask puts q to name's galley. A galley that refuses the item, an older one
+// that does not speak its protocol version among them, is no one to ask.
 func Ask(ctx context.Context, name string, q Question) (Answer, error) {
-	a, err := ask(ctx, name, q)
-	if errors.Is(err, errOldGalley) && (q.Diff != nil || q.Always) {
-		q.Diff, q.Always = nil, false
-		a, err = ask(ctx, name, q)
-	}
-	if errors.Is(err, errOldGalley) {
-		err = fmt.Errorf("%w: %v", ErrNobody, err)
-	}
-	return a, err
-}
-
-// errOldGalley is galley refusing an item's protocol version.
-var errOldGalley = errors.New("galley does not speak this protocol version")
-
-func ask(ctx context.Context, name string, q Question) (Answer, error) {
 	u, err := user.Lookup(name)
 	if err != nil {
 		return Answer{}, err
@@ -132,9 +115,6 @@ func ask(ctx context.Context, name string, q Question) (Answer, error) {
 	}
 	if err != nil {
 		return Answer{}, fmt.Errorf("%w: %v", ErrNobody, err)
-	}
-	if w.Error != "" && strings.Contains(w.Error, "protocol version") {
-		return Answer{}, fmt.Errorf("%w: galley says %q", errOldGalley, w.Error)
 	}
 	if w.Error != "" {
 		return Answer{}, fmt.Errorf("%w: galley says %q", ErrNobody, w.Error)
