@@ -156,6 +156,10 @@ $ nix flake check      # build, tests with and without -race, vet, gofmt,
                        # the Zig's tests and analysis, the modules'
                        # evaluation, and the signer, sudo-gate, sudo-remote
                        # and policy VM tests
+$ nix build .#timing.sudo-gate -L
+                       # the sudo-gate VM test held to the gate's times as
+                       # well; by hand only, on a machine fit to measure,
+                       # since a time taken on a CI runner says nothing
 ```
 
 ## Licence

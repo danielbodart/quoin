@@ -1,6 +1,15 @@
 # quoin-sudo as nixosModules.sudo runs it, with fakegalley as dan's
 # galley.service.
-{ self }:
+#
+# timing: whether to hold the gate to its times as well -- 'C' from a cold
+# gate inside the plugin's 250 ms, and a no-tty sudo against a stuck or
+# crash-looping gate failing inside 2 s. Off in checks: a time measured on a
+# CI runner, emulating the VM with no KVM, says more about the runner than
+# about the gate. On in the timing.sudo-gate output, run by hand on a machine
+# fit to measure (nix build .#timing.sudo-gate). The behaviour around the
+# times -- a stuck or crash-looping gate fails the sudo rather than hanging
+# it, and says the gate is not running -- is asserted either way.
+{ self, timing ? false }:
 { lib, hostPkgs, ... }:
 
 let
@@ -212,6 +221,7 @@ in
     def kill_sudo(signal="KILL"):
         machine.succeed(f"pkill -{signal} -x sudo")
 
+    timing = ${if timing then "True" else "False"}
     gate_not_running = "quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated"
 
     machine.wait_for_unit("quoin-sudo.socket")
@@ -220,14 +230,15 @@ in
     machine.succeed("install -d -o dan -g users -m 0755 /run/fakegalley")
     galley("ok " + pw + " 0")
 
-    with subtest("C and G answer well inside their 250 ms, from a cold gate too"):
-        cold = []
-        for i in range(5):
-            machine.succeed("systemctl stop quoin-sudo.service")
-            cold.append(float(machine.succeed("python3 ${latency} cold")))
-        warm = machine.succeed("python3 ${latency} warm").strip()
-        print(f"gate latency: cold C {cold} ms; warm {warm}")
-        assert max(cold) < 250, cold
+    if timing:
+        with subtest("C and G answer well inside their 250 ms, from a cold gate too"):
+            cold = []
+            for i in range(5):
+                machine.succeed("systemctl stop quoin-sudo.service")
+                cold.append(float(machine.succeed("python3 ${latency} cold")))
+            warm = machine.succeed("python3 ${latency} warm").strip()
+            print(f"gate latency: cold C {cold} ms; warm {warm}")
+            assert max(cold) < 250, cold
 
     with subtest("sudo's auth stack is the helper, pam_unix, pam_deny"):
         auth = machine.succeed("grep '^auth' /etc/pam.d/sudo").splitlines()
@@ -567,7 +578,7 @@ in
         machine.succeed("kill -STOP $(systemctl show -P MainPID quoin-sudo.service)")
         out, ms = timed_notty("sudo id -u")
         print(f"no-tty sudo against a stuck gate: {ms} ms")
-        assert "rc=0" not in out and gate_not_running in out and ms < 2000, out
+        assert "rc=0" not in out and gate_not_running in out and (ms < 2000 or not timing), out
         rc, out = tty("sudo id -u")
         assert "\n0" in out.replace("\r", ""), out
         machine.succeed("kill -CONT $(systemctl show -P MainPID quoin-sudo.service)")
@@ -582,7 +593,7 @@ in
         start_gate()
         out, ms = timed_notty("sudo id -u")
         print(f"no-tty sudo against a crash-looping gate: {ms} ms")
-        assert "rc=0" not in out and gate_not_running in out and ms < 2000, out
+        assert "rc=0" not in out and gate_not_running in out and (ms < 2000 or not timing), out
         machine.succeed("systemctl is-active quoin-sudo.socket")
         rc, out = tty("sudo id -u")
         assert "\n0" in out.replace("\r", ""), out
