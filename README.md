@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.png" alt="quoin" width="600"></p>
+
 # quoin
 
 The host's gatekeepers. Three small daemons stand between the programs you
