@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-
-	"github.com/danielbodart/frisket/policy"
 )
 
 // Outcome is what a route's rules say about a command. The zero value
@@ -53,8 +51,8 @@ const RuleUnmatched = "unmatched"
 type Decision struct {
 	Outcome    Outcome
 	Rule       string
-	Operation  *policy.Operation
-	Operations []*policy.Operation
+	Operation  *Operation
+	Operations []*Operation
 }
 
 // Rules are a route's exec rules, env names and unmatched, compiled.
@@ -69,12 +67,12 @@ type Rules struct {
 	shell bool
 }
 
-// Compile reads a route's Exec, Env, Unmatched and Shell, and refuses what
-// frisket would refuse to load: a rule that is not one, a rule listed twice,
+// Compile reads a Spec's Exec, Env, Unmatched and Shell, and refuses what
+// no route should load with: a rule that is not one, a rule listed twice,
 // an env name that is not one, or listed twice, env names on a Shell route,
-// and a route that refuses every command. The rest of the route is no part
-// of how it decides, and is neither read nor checked.
-func Compile(route policy.SSHRoute) (*Rules, error) {
+// and a route that refuses every command. Whatever else a route says is no
+// part of how it decides, and is not in a Spec.
+func Compile(route Spec) (*Rules, error) {
 	r := &Rules{shell: route.Shell}
 	if route.Shell && len(route.Env) > 0 {
 		return nil, errors.New("env on a shell route: a command typed into the device's shell is its words alone, and no assignment is read in it")
@@ -208,7 +206,7 @@ func (r *Rules) unreadable() Decision {
 func (r *Rules) decision(cmds []Simple) Decision {
 	var (
 		d   Decision
-		ops []*policy.Operation
+		ops []*Operation
 	)
 	for i, c := range cmds {
 		outcome, by := r.decideSimple(c)
@@ -220,7 +218,7 @@ func (r *Rules) decision(cmds []Simple) Decision {
 		}
 		// By id: an operation with several patterns is a rule for each,
 		// each with its own copy of it, and is one operation all the same.
-		if by != nil && by.operation != nil && !slices.ContainsFunc(ops, func(o *policy.Operation) bool {
+		if by != nil && by.operation != nil && !slices.ContainsFunc(ops, func(o *Operation) bool {
 			return o.ID == by.operation.ID
 		}) {
 			ops = append(ops, by.operation)

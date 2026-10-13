@@ -11,8 +11,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/danielbodart/frisket/execrule"
-	"github.com/danielbodart/frisket/policy"
+	"github.com/danielbodart/quoin/execrule"
 )
 
 //go:embed danger.json
@@ -31,7 +30,7 @@ type Extra struct {
 func Danger(extra map[string]Extra) (*execrule.Rules, error) {
 	d := json.NewDecoder(bytes.NewReader(dangerJSON))
 	d.DisallowUnknownFields()
-	var rules []policy.ExecRule
+	var rules []execrule.Rule
 	if err := d.Decode(&rules); err != nil {
 		return nil, fmt.Errorf("danger.json: %w", err)
 	}
@@ -54,14 +53,14 @@ func Danger(extra map[string]Extra) (*execrule.Rules, error) {
 			rules = append(rules, rule(command, arg, e.Args[arg]))
 		}
 	}
-	r, err := execrule.Compile(policy.SSHRoute{Exec: rules})
+	r, err := execrule.Compile(execrule.Spec{Exec: rules})
 	if err != nil && len(rules) > builtin {
 		return nil, fmt.Errorf("danger: %w", err)
 	}
 	return r, err
 }
 
-func rule(command, arg, reason string) policy.ExecRule {
-	return policy.ExecRule{Command: command, Arg: arg, Ask: true,
-		Operation: &policy.Operation{ID: "host-danger", Summary: reason}}
+func rule(command, arg, reason string) execrule.Rule {
+	return execrule.Rule{Command: command, Arg: arg, Ask: true,
+		Operation: &execrule.Operation{ID: "host-danger", Summary: reason}}
 }

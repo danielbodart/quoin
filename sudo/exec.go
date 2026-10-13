@@ -10,8 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/danielbodart/frisket/execrule"
-	"github.com/danielbodart/frisket/policy"
+	"github.com/danielbodart/quoin/execrule"
 )
 
 // Rule is what the gate answers for the commands one exec pattern matches,
@@ -89,10 +88,10 @@ func CheckExec(rules map[string]Rule) error {
 // refuses. A literal pattern beats a pattern, a narrower one a wider one,
 // and an arg rule only makes the answer stricter.
 func CompileExec(rules map[string]Rule) (*ExecRules, error) {
-	sets := map[string][]policy.ExecRule{}
+	sets := map[string][]execrule.Rule{}
 	for _, key := range slices.Sorted(maps.Keys(rules)) {
 		r := rules[key]
-		command, arg := policy.RuleName(key)
+		command, arg := execrule.RuleName(key)
 		first, _, _ := strings.Cut(command, " ")
 		switch {
 		case command == "":
@@ -102,7 +101,7 @@ func CompileExec(rules map[string]Rule) (*ExecRules, error) {
 		case r.RunAs != "" && !loginName.MatchString(r.RunAs):
 			return nil, fmt.Errorf("exec.%s.runAs: %q is not a user's name", key, r.RunAs)
 		}
-		e := policy.ExecRule{Command: command, Arg: arg, Operation: &policy.Operation{ID: "sudo-exec", Summary: key}}
+		e := execrule.Rule{Command: command, Arg: arg, Operation: &execrule.Operation{ID: "sudo-exec", Summary: key}}
 		switch r.Answer {
 		case Allow:
 		case Ask:
@@ -126,7 +125,7 @@ func CompileExec(rules map[string]Rule) (*ExecRules, error) {
 		// question. The rule that never matches is there for a set with no
 		// rule that admits, which execrule would refuse as refusing every
 		// command.
-		r, err := execrule.Compile(policy.SSHRoute{Exec: append(set, policy.ExecRule{Command: never}), Unmatched: "refuse"})
+		r, err := execrule.Compile(execrule.Spec{Exec: append(set, execrule.Rule{Command: never}), Unmatched: "refuse"})
 		if err != nil {
 			return nil, fmt.Errorf("exec: %w", err)
 		}

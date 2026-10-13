@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	"pgregory.net/rapid"
-
-	"github.com/danielbodart/frisket/policy"
 )
 
 func TestACommandIsReadAsSimpleCommandsOfPlainOrQuotedWords(t *testing.T) {
@@ -178,8 +176,8 @@ func TestACommandIsReadAsSimpleCommandsOfPlainOrQuotedWords(t *testing.T) {
 
 // spec is a rule written shortly: "ask:" or "refuse:" first, then the
 // command pattern, then " [arg glob]".
-func spec(s string) policy.ExecRule {
-	var e policy.ExecRule
+func spec(s string) Rule {
+	var e Rule
 	switch {
 	case strings.HasPrefix(s, "ask:"):
 		e.Ask, s = true, strings.TrimPrefix(s, "ask:")
@@ -330,9 +328,9 @@ func TestArgRulesOnlyTighten(t *testing.T) {
 // The decision carries the deciding rule's operation, and every operation
 // the parts were decided by where there are more than one.
 func TestADecisionCarriesItsOperations(t *testing.T) {
-	op := func(id string) *policy.Operation { return &policy.Operation{ID: id, Summary: id} }
+	op := func(id string) *Operation { return &Operation{ID: id, Summary: id} }
 	var rules []rule
-	for _, e := range []policy.ExecRule{
+	for _, e := range []Rule{
 		{Command: "ls **", Operation: op("list")},
 		{Command: "cd *", Operation: op("cd")},
 		{Command: "rm **", Refuse: true, Operation: op("remove")},
@@ -349,7 +347,7 @@ func TestADecisionCarriesItsOperations(t *testing.T) {
 		}
 		rules = append(rules, r)
 	}
-	ids := func(ops []*policy.Operation) []string {
+	ids := func(ops []*Operation) []string {
 		var out []string
 		for _, o := range ops {
 			out = append(out, o.ID)
@@ -389,41 +387,41 @@ func TestADecisionCarriesItsOperations(t *testing.T) {
 
 func TestARuleIsRefusedUnlessItHasOneSpellingAndOneMeaning(t *testing.T) {
 	for _, tc := range []struct {
-		rule policy.ExecRule
+		rule Rule
 		want string
 	}{
-		{policy.ExecRule{}, "no command and no arg"},
-		{policy.ExecRule{Command: " ls"}, "one space"},
-		{policy.ExecRule{Command: "ls "}, "one space"},
-		{policy.ExecRule{Command: "ls  -l"}, "one space"},
-		{policy.ExecRule{Command: "** ls"}, "only the last word"},
-		{policy.ExecRule{Command: "ls ***"}, "not"},
-		{policy.ExecRule{Command: "ls a*"}, "not"},
-		{policy.ExecRule{Command: "ls $x"}, "not"},
-		{policy.ExecRule{Command: "ls\t-l"}, "not"},
-		{policy.ExecRule{Command: "ls; rm"}, "not"},
-		{policy.ExecRule{Command: "PATH=/tmp **"}, "assignment"},
-		{policy.ExecRule{Command: "cat =deploy"}, "begins ="},
-		{policy.ExecRule{Command: "time **"}, "reserved word"},
-		{policy.ExecRule{Command: "- **"}, "reserved word"},
-		{policy.ExecRule{Command: "exec **"}, "runs the command after it"},
-		{policy.ExecRule{Command: "command *"}, "runs the command after it"},
-		{policy.ExecRule{Command: "builtin"}, "runs the command after it"},
-		{policy.ExecRule{Command: "kill %self"}, "begins %"},
-		{policy.ExecRule{Command: "%1"}, "begins %"},
-		{policy.ExecRule{Command: "ls", Ask: true, Refuse: true}, "both asks and refuses"},
-		{policy.ExecRule{Arg: ".ssh"}, "only asks or refuses"},
-		{policy.ExecRule{Command: "cat **", Arg: ".ssh"}, "only asks or refuses"},
-		{policy.ExecRule{Arg: "*", Refuse: true}, "every word"},
-		{policy.ExecRule{Arg: "***", Refuse: true}, "**"},
-		{policy.ExecRule{Arg: "a**b", Refuse: true}, "never crosses"},
-		{policy.ExecRule{Arg: "a\\b", Refuse: true}, "printable"},
-		{policy.ExecRule{Arg: "it's", Refuse: true}, "printable"},
-		{policy.ExecRule{Arg: "a\tb", Refuse: true}, "printable"},
-		{policy.ExecRule{Arg: "é", Refuse: true}, "printable"},
-		{policy.ExecRule{Command: "ls *x", Arg: ".ssh", Refuse: true}, "not"},
-		{policy.ExecRule{Command: "ls", Operation: &policy.Operation{ID: "ls"}}, "id and a summary"},
-		{policy.ExecRule{Command: "ls", Operation: &policy.Operation{ID: "ls", Summary: "List", Class: "safe"}}, "read, write or guarded"},
+		{Rule{}, "no command and no arg"},
+		{Rule{Command: " ls"}, "one space"},
+		{Rule{Command: "ls "}, "one space"},
+		{Rule{Command: "ls  -l"}, "one space"},
+		{Rule{Command: "** ls"}, "only the last word"},
+		{Rule{Command: "ls ***"}, "not"},
+		{Rule{Command: "ls a*"}, "not"},
+		{Rule{Command: "ls $x"}, "not"},
+		{Rule{Command: "ls\t-l"}, "not"},
+		{Rule{Command: "ls; rm"}, "not"},
+		{Rule{Command: "PATH=/tmp **"}, "assignment"},
+		{Rule{Command: "cat =deploy"}, "begins ="},
+		{Rule{Command: "time **"}, "reserved word"},
+		{Rule{Command: "- **"}, "reserved word"},
+		{Rule{Command: "exec **"}, "runs the command after it"},
+		{Rule{Command: "command *"}, "runs the command after it"},
+		{Rule{Command: "builtin"}, "runs the command after it"},
+		{Rule{Command: "kill %self"}, "begins %"},
+		{Rule{Command: "%1"}, "begins %"},
+		{Rule{Command: "ls", Ask: true, Refuse: true}, "both asks and refuses"},
+		{Rule{Arg: ".ssh"}, "only asks or refuses"},
+		{Rule{Command: "cat **", Arg: ".ssh"}, "only asks or refuses"},
+		{Rule{Arg: "*", Refuse: true}, "every word"},
+		{Rule{Arg: "***", Refuse: true}, "**"},
+		{Rule{Arg: "a**b", Refuse: true}, "never crosses"},
+		{Rule{Arg: "a\\b", Refuse: true}, "printable"},
+		{Rule{Arg: "it's", Refuse: true}, "printable"},
+		{Rule{Arg: "a\tb", Refuse: true}, "printable"},
+		{Rule{Arg: "é", Refuse: true}, "printable"},
+		{Rule{Command: "ls *x", Arg: ".ssh", Refuse: true}, "not"},
+		{Rule{Command: "ls", Operation: &Operation{ID: "ls"}}, "id and a summary"},
+		{Rule{Command: "ls", Operation: &Operation{ID: "ls", Summary: "List", Class: "safe"}}, "read, write or guarded"},
 	} {
 		_, err := compileRule(tc.rule)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -452,13 +450,13 @@ var patternWord = rapid.OneOf(
 	stringOf(plainChars[:len(plainChars)-1], 1, 4),
 )
 
-// drawRules draws rules frisket can read, admitting ones above all, and
+// drawRules draws rules Compile takes, admitting ones above all, and
 // arg rules among them.
 func drawRules(t *rapid.T) []rule {
 	n := rapid.IntRange(0, 6).Draw(t, "rules")
 	var rules []rule
 	for len(rules) < n {
-		var e policy.ExecRule
+		var e Rule
 		if rapid.IntRange(0, 3).Draw(t, "kind") > 0 {
 			ws := rapid.SliceOfN(patternWord, 0, 4).Draw(t, "words")
 			if len(ws) == 0 || rapid.Bool().Draw(t, "tail") {
@@ -629,7 +627,7 @@ func TestAddingASimpleCommandNeverLoosens(t *testing.T) {
 // admits it.
 func TestAnArgRefusedWordAnywhereRefuses(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		secrets, err := compileRule(policy.ExecRule{Arg: ".ssh", Refuse: true})
+		secrets, err := compileRule(Rule{Arg: ".ssh", Refuse: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -673,7 +671,7 @@ func TestAReadableCommandIsDecidedByItsOnlyMatchingRule(t *testing.T) {
 			}).Draw(t, "words")
 		outcome := rapid.SampledFrom([]Outcome{Allow, Ask, Refuse}).Draw(t, "outcome")
 		pattern := strings.Join(ws, " ")
-		r, err := compileRule(policy.ExecRule{Command: pattern, Ask: outcome == Ask, Refuse: outcome == Refuse})
+		r, err := compileRule(Rule{Command: pattern, Ask: outcome == Ask, Refuse: outcome == Refuse})
 		if err != nil {
 			t.Fatal(err)
 		}

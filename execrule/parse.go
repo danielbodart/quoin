@@ -8,7 +8,7 @@ import (
 // A command is decided by its words, and only a command a shell reads as
 // exactly its words has any. sshd hands the command to the login shell as one
 // string, so that is a real difference, not a theoretical one: `ls $(rm x)`
-// is not two words to bash. So frisket reads a small grammar every login
+// is not two words to bash. So this package reads a small grammar every login
 // shell of the POSIX family, fish and csh reads alike -- simple commands of
 // plain, single-quoted or double-quoted words, joined by && || ; and |, and
 // ending, if they like, >/dev/null or </dev/null -- and a command with
@@ -35,7 +35,7 @@ func plainByte(b byte) bool {
 // not the quote itself -- there is no escaping one in bash -- nor a
 // backslash, which escapes a quote inside single quotes in fish, nor a !,
 // which csh expands there. Each of those is read differently by some login
-// shell frisket allows for, and it does not know which one the machine has.
+// shell it allows for, and it does not know which one the machine has.
 func quotedByte(b byte) bool {
 	return ' ' <= b && b <= '~' && b != '\'' && b != '\\' && b != '!'
 }
@@ -51,7 +51,7 @@ func doubleQuotedByte(b byte) bool {
 	return quotedByte(b) && b != '$' && b != '`' && b != '"'
 }
 
-// maxCommand bounds a command, as every input frisket matches is bounded:
+// maxCommand bounds a command, as every input matched here is bounded:
 // a longer one is unreadable, so deciding it is never more work than this
 // much. Nothing worth a rule is 8 KiB long, and a question shows a person
 // far less of one.
@@ -109,7 +109,7 @@ type word struct {
 	quoted bool
 }
 
-// lex reads command as frisket's grammar, into its simple commands' words,
+// lex reads command as this package's grammar, into its simple commands' words,
 // or reports it unreadable. A simple command is words separated by spaces,
 // and simple commands are joined by &&, ||, ; or |, with or without spaces.
 // A word is plain bytes, not beginning % or =, or a single- or double-quoted
@@ -456,7 +456,7 @@ func (r *Rules) listed(name string) bool {
 }
 
 // maxShellCommand bounds a command on a Shell route. It is typed into a
-// device's line editor, whose buffer frisket does not know the size of, and
+// device's line editor, whose buffer nobody here knows the size of, and
 // one that cut a longer line short would run the start of it, a command
 // nobody decided. 255 bytes is as long as a line editor is likely to be
 // short, and longer than any command a device's CLI is given.
@@ -465,7 +465,7 @@ const maxShellCommand = 255
 // parseShell reads a command for a Shell route: one simple command of plain
 // words separated by spaces, and nothing else -- no operator, no
 // redirection, no quote, and nothing taken off it. The device's shell is a
-// router's or a modem's own CLI, not of the POSIX family, and frisket knows
+// router's or a modem's own CLI, not of the POSIX family, and this package knows
 // nothing of its grammar: what it can say is that a line of letters, digits
 // and _@%+=:,./- is words to any shell, and holds no byte a line editor
 // reads as more than itself -- no control byte to end the line early, no

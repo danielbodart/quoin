@@ -6,13 +6,11 @@ import (
 	"testing"
 
 	"pgregory.net/rapid"
-
-	"github.com/danielbodart/frisket/policy"
 )
 
 func shellRules(t testing.TB, unmatched string, specs ...string) *Rules {
 	t.Helper()
-	route := policy.SSHRoute{Unmatched: unmatched, Shell: true}
+	route := Spec{Unmatched: unmatched, Shell: true}
 	for _, s := range specs {
 		route.Exec = append(route.Exec, spec(s))
 	}
@@ -24,7 +22,7 @@ func shellRules(t testing.TB, unmatched string, specs ...string) *Rules {
 }
 
 // A Shell route reads one simple command of plain words, and nothing more:
-// the device's shell is no grammar frisket knows.
+// the device's shell is no grammar this package knows.
 func TestAShellRouteReadsOneSimpleCommandOfPlainWords(t *testing.T) {
 	r := shellRules(t, "ask")
 	for _, tc := range []struct {
@@ -129,7 +127,7 @@ func TestAShellRouteDecidesWhatItCannotReadAsUnmatched(t *testing.T) {
 }
 
 func TestAShellRouteListsNoEnvNames(t *testing.T) {
-	_, err := Compile(policy.SSHRoute{Shell: true, Env: []string{"LANG"}, Exec: []policy.ExecRule{{Command: "ls"}}})
+	_, err := Compile(Spec{Shell: true, Env: []string{"LANG"}, Exec: []Rule{{Command: "ls"}}})
 	if err == nil || !strings.Contains(err.Error(), "shell route") {
 		t.Fatalf("env on a shell route: %v", err)
 	}

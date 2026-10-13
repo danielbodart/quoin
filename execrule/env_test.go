@@ -8,15 +8,13 @@ import (
 	"testing"
 
 	"pgregory.net/rapid"
-
-	"github.com/danielbodart/frisket/policy"
 )
 
 // mustCompile compiles a route of rules written as spec writes them, with
 // env names, under unmatched.
 func mustCompile(t testing.TB, unmatched string, env []string, specs ...string) *Rules {
 	t.Helper()
-	route := policy.SSHRoute{Unmatched: unmatched, Env: env}
+	route := Spec{Unmatched: unmatched, Env: env}
 	for _, s := range specs {
 		route.Exec = append(route.Exec, spec(s))
 	}
@@ -192,7 +190,7 @@ func TestEnvNamesAreNamesOrAPrefixAndNoneThatChangesWhatRuns(t *testing.T) {
 	for _, ok := range [][]string{
 		nil, {"LANG"}, {"LC_*", "TZ", "COLUMNS"}, {"L_*"}, {"LD"}, {"LDX"}, {"PATHS"}, {"ENVIRONMENT"}, {"_X"}, {"A*"},
 	} {
-		if _, err := Compile(policy.SSHRoute{Env: ok}); err != nil {
+		if _, err := Compile(Spec{Env: ok}); err != nil {
 			t.Errorf("%q: %v", ok, err)
 		}
 	}
@@ -237,7 +235,7 @@ func TestEnvNamesAreNamesOrAPrefixAndNoneThatChangesWhatRuns(t *testing.T) {
 		{[]string{"GLIBC_*"}, "names GLIBC_TUNABLES"},
 		{tooMany, "more than 64"},
 	} {
-		_, err := Compile(policy.SSHRoute{Env: tc.env})
+		_, err := Compile(Spec{Env: tc.env})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%q: got %v, want an error saying %q", tc.env, err, tc.want)
 		}
@@ -247,11 +245,11 @@ func TestEnvNamesAreNamesOrAPrefixAndNoneThatChangesWhatRuns(t *testing.T) {
 // What strip takes off is never itself what a rule is written for, so
 // neither env with more words nor time first is a pattern.
 func TestEnvIsOnlyAPatternAlone(t *testing.T) {
-	if _, err := compileRule(policy.ExecRule{Command: "env"}); err != nil {
+	if _, err := compileRule(Rule{Command: "env"}); err != nil {
 		t.Error(err)
 	}
 	for _, p := range []string{"env ls", "env **", "env *", "env -i **"} {
-		if _, err := compileRule(policy.ExecRule{Command: p}); err == nil || !strings.Contains(err.Error(), "only ever alone") {
+		if _, err := compileRule(Rule{Command: p}); err == nil || !strings.Contains(err.Error(), "only ever alone") {
 			t.Errorf("%q: got %v", p, err)
 		}
 	}

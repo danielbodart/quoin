@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/danielbodart/frisket/policy"
 )
 
 // The words of a pattern that are not literal.
@@ -34,13 +32,13 @@ type rule struct {
 	// command's first.
 	arg       string
 	outcome   Outcome
-	operation *policy.Operation
+	operation *Operation
 }
 
 // compileRule reads an ExecRule. A pattern is words separated by single
 // spaces, so that a pattern has one spelling and two rules that look
 // different are different.
-func compileRule(e policy.ExecRule) (rule, error) {
+func compileRule(e Rule) (rule, error) {
 	r := rule{name: e.Command, outcome: Allow}
 	if e.Arg != "" {
 		r.name = strings.TrimPrefix(e.Command+" [arg "+e.Arg+"]", " ")
@@ -143,7 +141,7 @@ func checkGlob(g string) error {
 
 // operation is a rule's operation: an id and a summary, and a class of the
 // three if any, as a path rule's must be.
-func operation(o *policy.Operation) (*policy.Operation, error) {
+func operation(o *Operation) (*Operation, error) {
 	if o == nil {
 		return nil, nil
 	}
@@ -155,7 +153,7 @@ func operation(o *policy.Operation) (*policy.Operation, error) {
 	default:
 		return nil, fmt.Errorf("operation %s: class %q: read, write or guarded", o.ID, o.Class)
 	}
-	return &policy.Operation{ID: o.ID, Summary: o.Summary, Description: o.Description, Class: o.Class, Category: o.Category}, nil
+	return &Operation{ID: o.ID, Summary: o.Summary, Description: o.Description, Class: o.Class, Category: o.Category}, nil
 }
 
 // matches is whether the rule's pattern matches a simple command's words:
