@@ -50,9 +50,14 @@ in
         cmd = f"systemd-run --wait --pipe --quiet --collect --unit=policy-reader -p User={user} -- ${quoin}/bin/quoin-courier {args} 2>&1"
         return machine.succeed(cmd) if ok else machine.fail(cmd)
 
-    def courier_log():
-        out = machine.succeed("journalctl -u quoin-courier.service -o cat")
-        return [json.loads(l) for l in out.splitlines() if l.startswith("{")]
+    # The courier's lines with this msg, once there are at least n: the
+    # journal takes them in its own time, so a line logged as the reply went
+    # need not be there yet when the reply is.
+    def courier_log(msg, n):
+        cmd = "journalctl -u quoin-courier.service -o cat"
+        machine.wait_until_succeeds(f"test $({cmd} | grep -c '\"msg\":\"{msg}\"') -ge {n}")
+        out = machine.succeed(cmd)
+        return [e for e in (json.loads(l) for l in out.splitlines() if l.startswith("{")) if e.get("msg") == msg]
 
     machine.wait_for_unit("quoin-courier.socket")
     machine.wait_for_unit("multi-user.target")
@@ -84,7 +89,7 @@ in
         assert base64.b64decode(got["sig"]).decode() == machine.succeed("cat /home/alice/proj/chase.json.sig"), got
         digest = got["digest"]
         assert digest.startswith("sha256:"), got
-        r = [e for e in courier_log() if e.get("msg") == "read"][-1]
+        r = courier_log("read", 1)[-1]
         assert r["peer"] == "policy-reader.service" and r["outcome"] == "ok" and r["signed"], r
 
     with subtest("a process with no policy above it reads as none, and a stale start is refused"):
@@ -126,7 +131,7 @@ in
 
         out = peer("bob", f"write -old {digest} {new}", ok=False)
         assert "changed since it was read" in out, out
-        w = [e for e in courier_log() if e.get("msg") == "write"]
+        w = courier_log("write", 4)
         assert [e["outcome"] for e in w] == ["refuse", "refuse", "written", "refuse"], w
 
     with subtest("a write whose signature is for another project is refused"):

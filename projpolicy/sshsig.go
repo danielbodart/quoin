@@ -110,12 +110,33 @@ func signedData(namespace, alg string, message []byte) ([]byte, error) {
 		return nil, err
 	}
 	h.Write(message)
-	return append([]byte(sigMagic), ssh.Marshal(struct {
-		Namespace string
-		Reserved  []byte
-		HashAlg   string
-		Hash      []byte
-	}{namespace, nil, alg, h.Sum(nil)})...), nil
+	return append([]byte(sigMagic), ssh.Marshal(signedPart{namespace, nil, alg, h.Sum(nil)})...), nil
+}
+
+// signedPart is the blob signedData builds, as ssh.Marshal reads it back.
+type signedPart struct {
+	Namespace string
+	Reserved  []byte
+	HashAlg   string
+	Hash      []byte
+}
+
+// ParseSignedData reads what a key is asked to sign for an SSHSIG, the blob
+// signedData builds -- the magic, the namespace, the reserved string, the
+// hash's name and the hash -- and returns its namespace and hash name, so
+// the signer reads the namespace of a sign it is asked for exactly as this
+// package writes it. Nothing past the shape is checked: a hash this package
+// would refuse is still an SSHSIG, and the signer shows it as one.
+func ParseSignedData(data []byte) (namespace, hashAlg string, err error) {
+	rest, ok := bytes.CutPrefix(data, []byte(sigMagic))
+	if !ok {
+		return "", "", errors.New("not SSHSIG signed data: no magic")
+	}
+	var p signedPart
+	if err := ssh.Unmarshal(rest, &p); err != nil {
+		return "", "", fmt.Errorf("SSHSIG signed data: %w", err)
+	}
+	return p.Namespace, p.HashAlg, nil
 }
 
 // verify checks s over message alone: the namespace exactly, as ssh-keygen

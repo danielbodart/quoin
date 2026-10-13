@@ -293,8 +293,8 @@ func (c *conn) classify(key ssh.PublicKey, data []byte) (*request, error) {
 	if sudomsg.HasMagic(data) {
 		return c.remoteSudo(req, data)
 	}
-	if s, err := parseSSHSIG(data); err == nil {
-		req.class, req.namespace = classSSHSIG, s.namespace
+	if ns, _, err := projpolicy.ParseSignedData(data); err == nil {
+		req.class, req.namespace = classSSHSIG, ns
 		return req, nil
 	}
 	u, err := parseUserauth(data)

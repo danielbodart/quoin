@@ -312,3 +312,28 @@ func TestAMalformedSignatureIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// ParseSignedData reads back exactly what signedData builds, which is what
+// the signer reads a sign's namespace by, and refuses anything else.
+func TestParseSignedDataReadsWhatIsSigned(t *testing.T) {
+	ns := "quoin-policy:~/Projects/foo"
+	for _, alg := range []string{"sha256", "sha512"} {
+		data, err := signedData(ns, alg, []byte("{}\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotNS, gotAlg, err := ParseSignedData(data)
+		if err != nil || gotNS != ns || gotAlg != alg {
+			t.Errorf("%s: got %q, %q, %v", alg, gotNS, gotAlg, err)
+		}
+		if _, _, err := ParseSignedData(append(data, 0)); err == nil {
+			t.Errorf("%s: a trailing byte was read", alg)
+		}
+		if _, _, err := ParseSignedData(data[:len(data)-1]); err == nil {
+			t.Errorf("%s: a short hash was read", alg)
+		}
+		if _, _, err := ParseSignedData(data[1:]); err == nil {
+			t.Errorf("%s: no magic was read", alg)
+		}
+	}
+}

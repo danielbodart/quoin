@@ -1,7 +1,6 @@
 package agentsrv
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 
@@ -12,17 +11,12 @@ const (
 	msgUserauthRequest = 50
 	methodPublickey    = "publickey"
 	methodHostbound    = "publickey-hostbound-v00@openssh.com"
-	sshsigMagic        = "SSHSIG"
 )
 
 type userauth struct {
 	sid     []byte
 	key     []byte
 	hostKey []byte
-}
-
-type sshsig struct {
-	namespace string
 }
 
 type bind struct {
@@ -95,22 +89,6 @@ func parseUserauth(data []byte) (*userauth, error) {
 		return nil, err
 	}
 	return u, nil
-}
-
-func parseSSHSIG(data []byte) (*sshsig, error) {
-	rest, ok := bytes.CutPrefix(data, []byte(sshsigMagic))
-	if !ok {
-		return nil, errMalformed
-	}
-	r := &reader{b: rest}
-	s := &sshsig{namespace: string(r.bytes())}
-	r.bytes()
-	r.bytes()
-	r.bytes()
-	if err := r.end(); err != nil {
-		return nil, err
-	}
-	return s, nil
 }
 
 // parseBind reads session-bind@openssh.com and verifies the host key's

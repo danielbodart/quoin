@@ -25,6 +25,7 @@ import (
 	"github.com/danielbodart/quoin/internal/grant"
 	"github.com/danielbodart/quoin/internal/sudomsg"
 	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/projpolicy"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/sys/unix"
@@ -366,9 +367,9 @@ func TestSSHSIGShowsItsNamespace(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := parseSSHSIG(data)
-		if err != nil || s.namespace != ns {
-			t.Fatalf("%s: got %+v, %v", ns, s, err)
+		got, _, err := projpolicy.ParseSignedData(data)
+		if err != nil || got != ns {
+			t.Fatalf("%s: got %q, %v", ns, got, err)
 		}
 	}
 

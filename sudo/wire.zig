@@ -260,16 +260,26 @@ fn testLink(pid: u32, comm: []const u8, cmd: []const u8) chain.Link {
 
 var test_buf: [max_request]u8 = undefined;
 
-test "'C', 'V' and 'S' frame to their bytes" {
+// The wire's bytes are testdata/wire's, which the gate's Go tests read
+// too: a request here must frame to its .req file, which the gate must read
+// back, and a .reply file, which the gate must write, must read here, so a
+// tag, limit or reply byte changed on one side alone fails both sides'
+// tests rather than only the VM's.
+fn golden(comptime name: []const u8) []const u8 {
+    return @embedFile("testdata/wire/" ++ name);
+}
+
+test "'C', 'G', 'V' and 'S' frame to their bytes" {
     var c: [header_len]u8 = undefined;
-    try testing.expectEqualSlices(u8, "QSUD\x02C\x00\x00\x00\x00", empty(&c, .check_in));
+    try testing.expectEqualSlices(u8, golden("check-in.req"), empty(&c, .check_in));
+    try testing.expectEqualSlices(u8, golden("did-check-in.req"), empty(&c, .did_check_in));
     var cm: [header_len + record_head]u8 = undefined;
-    try testing.expectEqualSlices(u8, "QSUD\x02C\x00\x00\x00\x00", checkIn(&cm, false));
-    try testing.expectEqualSlices(u8, "QSUD\x02C\x00\x00\x00\x05m\x00\x00\x00\x00", checkIn(&cm, true));
+    try testing.expectEqualSlices(u8, golden("check-in.req"), checkIn(&cm, false));
+    try testing.expectEqualSlices(u8, golden("check-in-remote.req"), checkIn(&cm, true));
     var v: [header_len + record_head + 1]u8 = undefined;
-    try testing.expectEqualSlices(u8, "QSUD\x02V\x00\x00\x00\x06r\x00\x00\x00\x01\x01", verify(&v, true));
-    try testing.expectEqualSlices(u8, "QSUD\x02S\x00\x00\x00\x0fp\x00\x00\x00\x02kbg\x00\x00\x00\x03sig", signature(&sig_buf, "kb", "sig"));
-    try testing.expectEqualSlices(u8, "QSUD\x02S\x00\x00\x00\x09f\x00\x00\x00\x04why?", signFailed(&sig_buf, "why?"));
+    try testing.expectEqualSlices(u8, golden("verify-ok.req"), verify(&v, true));
+    try testing.expectEqualSlices(u8, golden("signature.req"), signature(&sig_buf, "kb", "sig"));
+    try testing.expectEqualSlices(u8, golden("sign-failed.req"), signFailed(&sig_buf, "why?"));
 }
 
 var sig_buf: [max_signature_request]u8 = undefined;
@@ -280,13 +290,37 @@ test "'A' frames a link and one record per entry, and 'm' when remote" {
     const none = [_:null]?[*:0]const u8{};
     const argv = [_:null]?[*:0]const u8{"id"};
     const req = try approval(&test_buf, &links, @ptrCast(&ui), @ptrCast(&none), @ptrCast(&none), @ptrCast(&argv), null, false);
-    const want = "QSUD\x02A\x00\x00\x00\x4f" ++
-        "k\x00\x00\x00\x29\x00\x00\x00\x07\x00\x00\x00\x08\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x03\xe8\x00\x00\x00\x00\x00\x04bash\x00\x09bash\x00-c\x00x" ++
-        "u\x00\x00\x00\x08user=dan" ++ "u\x00\x00\x00\x08uid=1000" ++ "a\x00\x00\x00\x02id";
-    try testing.expectEqualSlices(u8, want, req);
+    try testing.expectEqualSlices(u8, golden("approval.req"), req);
     const remote = try approval(&test_buf, &links, @ptrCast(&ui), @ptrCast(&none), @ptrCast(&none), @ptrCast(&argv), null, true);
-    try testing.expectEqualSlices(u8, "QSUD\x02A\x00\x00\x00\x54", remote[0..10]);
-    try testing.expectEqualSlices(u8, want[10..] ++ "m\x00\x00\x00\x00", remote[10..]);
+    try testing.expectEqualSlices(u8, golden("approval-remote.req"), remote);
+}
+
+/// A golden reply's kind, if `e` allows it, and its message, if its length
+/// field is within the kind's limit and says what follows exactly.
+fn readGolden(b: []const u8, e: Expect) ?struct { Reply, []const u8 } {
+    const r = replyKind(b[0], e) orelse return null;
+    const n = lengthSize(r);
+    const len: u32 = if (n == 4) std.mem.readInt(u32, b[1..5], .big) else std.mem.readInt(u16, b[1..3], .big);
+    if (!lengthOk(r, len) or b.len != 1 + n + len) return null;
+    return .{ r, b[1 + n ..] };
+}
+
+test "the gate's replies read as what they are, where they may come" {
+    const yes = readGolden(golden("yes.reply"), .yes_no).?;
+    try testing.expectEqual(Reply.yes, yes[0]);
+    try testing.expectEqualStrings("quoin-sudo: ok", yes[1]);
+    try testing.expect(printable(yes[1]));
+    try testing.expectEqual(Reply.no, readGolden(golden("no.reply"), .remote).?[0]);
+    const pw = readGolden(golden("password.reply"), .local).?;
+    try testing.expectEqual(Reply.password, pw[0]);
+    try testing.expectEqualStrings("hunter2", pw[1]);
+    try testing.expect(readGolden(golden("password.reply"), .yes_no) == null);
+    const m = readGolden(golden("message.reply"), .remote).?;
+    try testing.expectEqual(Reply.message, m[0]);
+    const s = signing(m[1]).?;
+    try testing.expectEqualStrings("msg", s.message);
+    try testing.expectEqualSlices(u8, "\x00\x00\x00\x01\x00\x00\x00\x02kb", s.keys);
+    try testing.expect(readGolden(golden("message.reply"), .local) == null);
 }
 
 var big_buf: [max_request + 1]u8 = undefined;
