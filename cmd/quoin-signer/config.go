@@ -14,7 +14,7 @@ import (
 	"github.com/danielbodart/quoin/projpolicy"
 )
 
-const defaultConfig = "/etc/frisket-signer/config.json"
+const defaultConfig = "/etc/quoin/signer.json"
 
 // config is the signer's settings file, its keys named as the NixOS module's
 // options are.
@@ -152,7 +152,7 @@ func checkRule(r agentsrv.Rule) error {
 // schema is the config file's JSON Schema.
 const schema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "frisket-signer config",
+  "title": "quoin-signer config",
   "type": "object",
   "additionalProperties": false,
   "required": ["forUser", "terminal"],
@@ -167,9 +167,9 @@ const schema = `{
       "$ref": "#/$defs/rule"
     },
     "sshsig": {
-      "description": "A direct SSHSIG sign in each namespace. An unlisted namespace is asked, Allow once. A frisket-policy namespace is refused whatever this says.",
+      "description": "A direct SSHSIG sign in each namespace. An unlisted namespace is asked, Allow once. A quoin-policy namespace is refused whatever this says.",
       "type": "object",
-      "propertyNames": { "minLength": 1, "not": { "pattern": "^frisket-policy" } },
+      "propertyNames": { "minLength": 1, "not": { "pattern": "^quoin-policy" } },
       "additionalProperties": { "$ref": "#/$defs/rule" }
     },
     "ssh": {

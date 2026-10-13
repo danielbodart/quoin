@@ -96,7 +96,7 @@ func TestAConfigReadsExecRulesAndThePolicy(t *testing.T) {
 		"exec": {"/run/current-system/sw/bin/journalctl **": {"runAs": "root", "answer": "allow"},
 		         "/run/current-system/sw/bin/journalctl ** [arg --vacuum*]": {"answer": "ask"},
 		         "/run/current-system/sw/bin/lpq": {"runAs": "lp", "answer": "refuse"}},
-		"policy": {"courier": "/run/frisket-policy/sock", "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json"}
+		"policy": {"courier": "/run/quoin-courier/sock", "allowedSigners": "/etc/quoin/allowed_signers", "fileName": "chase.json"}
 	}`)
 	c, err := loadConfig(path)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestAConfigReadsExecRulesAndThePolicy(t *testing.T) {
 		"/run/current-system/sw/bin/journalctl ** [arg --vacuum*]": {Answer: "ask"},
 		"/run/current-system/sw/bin/lpq":                           {RunAs: "lp", Answer: "refuse"},
 	}
-	if !reflect.DeepEqual(c.Exec, want) || c.Policy == nil || c.Policy.FileName != "chase.json" || c.Policy.Courier != "/run/frisket-policy/sock" {
+	if !reflect.DeepEqual(c.Exec, want) || c.Policy == nil || c.Policy.FileName != "chase.json" || c.Policy.Courier != "/run/quoin-courier/sock" {
 		t.Errorf("got %+v %+v", c.Exec, c.Policy)
 	}
 }
@@ -126,7 +126,7 @@ func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
 		`{"forUser": "dan", "danger": {"reboot": {"why": "x"}}}`,
 		`{"forUser": "dan", "danger": {"reboot": "x"}}`,
 		`{"forUser": "dan", "danger": {"** reboot": {"reason": "x"}}}`,
-		`{"forUser": "dan", "danger": {"systemctl **": {"args": {"frisket*": "x"}}}}`,
+		`{"forUser": "dan", "danger": {"systemctl **": {"args": {"quoin*": "x"}}}}`,
 		`{"forUser": "dan", "danger": {"systemctl **": {"args": {"": "x"}}}}`,
 		`{"forUser": "dan"} {}`,
 		`{"forUser": "dan", "exec": {"journalctl **": {"answer": "allow"}}}`,
@@ -134,9 +134,9 @@ func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
 		`{"forUser": "dan", "exec": {"/run/current-system/sw/bin/id": {"answer": "allow", "runas": "root"}}}`,
 		`{"forUser": "dan", "exec": {"/run/current-system/sw/bin/id": "allow"}}`,
 		`{"forUser": "dan", "exec": {"/run/current-system/sw/bin/cat ** [arg shadow]": {"answer": "allow"}}}`,
-		`{"forUser": "dan", "policy": {"courier": "sock", "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json"}}`,
-		`{"forUser": "dan", "policy": {"courier": "/run/frisket-policy/sock", "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json.sig"}}`,
-		`{"forUser": "dan", "policy": {"courier": "/run/frisket-policy/sock", "allowedSigners": "/etc/frisket/allowed_signers"}}`,
+		`{"forUser": "dan", "policy": {"courier": "sock", "allowedSigners": "/etc/quoin/allowed_signers", "fileName": "chase.json"}}`,
+		`{"forUser": "dan", "policy": {"courier": "/run/quoin-courier/sock", "allowedSigners": "/etc/quoin/allowed_signers", "fileName": "chase.json.sig"}}`,
+		`{"forUser": "dan", "policy": {"courier": "/run/quoin-courier/sock", "allowedSigners": "/etc/quoin/allowed_signers"}}`,
 	} {
 		if err := runCheck([]string{writeConfig(t, bad)}); err == nil {
 			t.Errorf("%s was accepted", bad)

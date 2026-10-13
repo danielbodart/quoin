@@ -1,7 +1,7 @@
-// Package agentsrv serves the SSH agent protocol: for frisket-signer, each
+// Package agentsrv serves the SSH agent protocol for quoin-signer: each
 // connection's session binds, the userauth, SSHSIG and remote sudo parsers,
-// and the fixed order in which a sign is made silently or asked; and for
-// frisket, a policy's git signing socket in front of the signer.
+// the fixed order in which a sign is made silently or asked, and the
+// policy-sign extension.
 package agentsrv
 
 import (
@@ -96,7 +96,7 @@ var errRefused = errors.New("refused")
 // reasonPolicyNamespace refuses a raw SSHSIG in a project policy's namespace,
 // whatever SSHSIG says and unasked: a policy is signed only where the signer
 // sees the bytes it signs, never as a blob whose message is a hash.
-const reasonPolicyNamespace = "a frisket-policy namespace is never signed raw"
+const reasonPolicyNamespace = "a quoin-policy namespace is never signed raw"
 
 // mainOfAny is whether a peer is the main process of one of units, run as
 // the user served. No units, the default, is nobody.

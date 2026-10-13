@@ -43,9 +43,9 @@ func newHarness(t *testing.T) *harness {
 	signer, _ := ssh.NewSignerFromKey(k)
 	h := &harness{
 		t: t, home: filepath.Join(dir, "home"), socket: filepath.Join(dir, "sock"), signer: signer,
-		peers: make(chan *peer.Requester, 4), cgroups: map[string]uint64{"frisket-signer.service": 11, "frisket-sudo.service": 12},
+		peers: make(chan *peer.Requester, 4), cgroups: map[string]uint64{"quoin-signer.service": 11, "quoin-sudo.service": 12},
 	}
-	line := `dan namespaces="frisket-policy:*" ` + string(ssh.MarshalAuthorizedKey(signer.PublicKey()))
+	line := `dan namespaces="quoin-policy:*" ` + string(ssh.MarshalAuthorizedKey(signer.PublicKey()))
 	signers, err := projpolicy.ParseAllowedSigners([]byte(line))
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func newHarness(t *testing.T) *harness {
 	h.s = &Server{
 		Name: "chase.json", Home: h.home, UID: os.Getuid(),
 		Signers: func() (*projpolicy.AllowedSigners, error) { return signers, nil },
-		Peers:   map[string]int{"frisket-signer.service": 951, "frisket-sudo.service": 952},
+		Peers:   map[string]int{"quoin-signer.service": 951, "quoin-sudo.service": 952},
 		Log:     slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		who:     func(*net.UnixConn) (*peer.Requester, error) { return <-h.peers, nil },
 		unitCgroup: func(unit string) (uint64, error) {
@@ -150,7 +150,7 @@ func TestReadIsThePolicyAboveTheAnchorsWorkingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Root != root || got.Namespace != "frisket-policy:~/Projects/foo" || string(got.Bytes) != string(body) ||
+	if got.Root != root || got.Namespace != "quoin-policy:~/Projects/foo" || string(got.Bytes) != string(body) ||
 		got.Digest != projpolicy.Digest(body) || got.Sig == nil {
 		t.Fatalf("got %+v", got)
 	}
@@ -181,7 +181,7 @@ func TestReadWithNoFileIsTheRepositoryTheAnchorIsIn(t *testing.T) {
 	h.mkdir("Projects/baz/.git")
 	pid, start := sleeper(t, h.mkdir("Projects/baz/src"))
 	got, err := courier.Read(context.Background(), h.signer951().socket, pid, start)
-	if err != nil || got.Root != repo || got.Namespace != "frisket-policy:~/Projects/baz" || got.Digest != "" || got.Bytes != nil {
+	if err != nil || got.Root != repo || got.Namespace != "quoin-policy:~/Projects/baz" || got.Digest != "" || got.Bytes != nil {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 
@@ -246,7 +246,7 @@ func TestWriteIsACompareAndSwapOnTheOldDigest(t *testing.T) {
 
 	// A first file, where there was none.
 	got, err := courier.Write(ctx, h.signer951().socket, root, "", body, h.sign(root, body))
-	if err != nil || got.Digest != projpolicy.Digest(body) || got.Namespace != "frisket-policy:~/Projects/foo" {
+	if err != nil || got.Digest != projpolicy.Digest(body) || got.Namespace != "quoin-policy:~/Projects/foo" {
 		t.Fatalf("first: %+v, %v", got, err)
 	}
 	p, err := projpolicy.Load(root, h.home, "chase.json", mustSigners(t, h))

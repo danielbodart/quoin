@@ -1,5 +1,5 @@
 .{
-    .name = .frisket_sudo,
+    .name = .quoin_sudo,
     .version = "0.0.0",
     // Lazy, fetched only under -Ddev=true, and pinned to flong's tags:
     // minish for property tests, zwanzig for static analysis.
@@ -15,7 +15,7 @@
             .lazy = true,
         },
     },
-    .fingerprint = 0x77fb8bde30df4ffe,
+    .fingerprint = 0x2841faf8f85912db,
     .minimum_zig_version = "0.15.2",
     .paths = .{""},
 }

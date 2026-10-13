@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,7 +19,6 @@ import (
 	"github.com/danielbodart/quoin/policysign"
 	"github.com/danielbodart/quoin/projpolicy"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 )
 
 func TestAHostPatternMatchesALabelOrMore(t *testing.T) {
@@ -136,7 +134,7 @@ func withPolicy(fc *fakeCourier) func(*Server) {
 	return func(s *Server) {
 		dir := filepath.Dir(s.KnownHosts)
 		pub, _ := ssh.NewPublicKey(s.Keys[0].Signer.Public())
-		line := `dan namespaces="frisket-policy:*" ` + string(ssh.MarshalAuthorizedKey(pub))
+		line := `dan namespaces="quoin-policy:*" ` + string(ssh.MarshalAuthorizedKey(pub))
 		if err := os.WriteFile(filepath.Join(dir, "allowed_signers"), []byte(line), 0o644); err != nil {
 			panic(err)
 		}
@@ -333,7 +331,7 @@ func TestAlwaysShowsTheRuleItWritesAndWritesIt(t *testing.T) {
 			fc := &fakeCourier{reads: map[int]*courier.Response{}}
 			h := newHarness(t, 1, withPolicy(fc))
 			old := ""
-			fc.reads[100] = &courier.Response{Root: foo, Namespace: "frisket-policy:~/Projects/foo"}
+			fc.reads[100] = &courier.Response{Root: foo, Namespace: "quoin-policy:~/Projects/foo"}
 			if c.current != nil {
 				old = *c.current
 				fc.reads[100] = h.file(foo, old, true)
@@ -361,7 +359,7 @@ func TestAlwaysShowsTheRuleItWritesAndWritesIt(t *testing.T) {
 				t.Errorf("wrote %+v", w)
 			}
 			signers, _ := projpolicy.ReadAllowedSigners(h.s.Policy.AllowedSigners)
-			if _, err := projpolicy.Verify(w.Bytes, w.Sig, "frisket-policy:~/Projects/foo", signers, "dan", time.Now()); err != nil {
+			if _, err := projpolicy.Verify(w.Bytes, w.Sig, "quoin-policy:~/Projects/foo", signers, "dan", time.Now()); err != nil {
 				t.Errorf("the signature: %v", err)
 			}
 			if !strings.Contains(h.log.String(), `"source":"always"`) || !strings.Contains(h.log.String(), `"outcome":"written"`) {
@@ -462,7 +460,7 @@ func TestPolicySignShowsTheDiffAndSignsOnAllow(t *testing.T) {
 	fc := &fakeCourier{}
 	h := newHarness(t, 1, withPolicy(fc))
 	old := project(`{"a.example": "allow"}`)
-	ns := "frisket-policy:~/Projects/foo"
+	ns := "quoin-policy:~/Projects/foo"
 	oldSig, _ := signPolicy(h.s.Keys[0], ns, []byte(old))
 	widened := project(`{"*.example": "allow"}`)
 
@@ -546,7 +544,7 @@ func TestPolicySignRefusesWhatItMayNotSign(t *testing.T) {
 func TestPolicySignSignsAPolicySignersApprovedUnasked(t *testing.T) {
 	fc := &fakeCourier{}
 	h := newHarness(t, 1, withPolicy(fc))
-	ns := "frisket-policy:~/Projects/foo"
+	ns := "quoin-policy:~/Projects/foo"
 	approved := policysign.Request{Root: foo, Name: "chase.json", New: []byte(project(`{"a.example": "allow"}`)), Approved: true}
 	signers, _ := projpolicy.ReadAllowedSigners(h.s.Policy.AllowedSigners)
 
@@ -573,14 +571,4 @@ func TestPolicySignSignsAPolicySignersApprovedUnasked(t *testing.T) {
 		}
 	}
 	h.nothingAsked()
-}
-
-// A policy's git signing socket, the only one a sandbox is given, refuses
-// policy-sign as it does every extension.
-func TestTheGitSigningSocketRefusesPolicySign(t *testing.T) {
-	g := &Git{Policy: "strict", UID: uid, Upstream: "/nonexistent", Log: slog.New(slog.DiscardHandler)}
-	c := &gitConn{g: g}
-	if _, err := c.Extension(policysign.Extension, nil); !errors.Is(err, agent.ErrExtensionUnsupported) {
-		t.Errorf("got %v", err)
-	}
 }

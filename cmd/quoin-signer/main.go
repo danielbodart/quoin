@@ -1,7 +1,8 @@
-// Command frisket-signer holds the SSH keys that live in the TPM, signs
-// silently for frisket, for a terminal tab ssh-ing to a known host, for any
-// process's direct login to a host allowed by name and for listed SSHSIG
-// namespaces, and asks through galley for everything else.
+// Command quoin-signer holds the SSH keys that live in the TPM, signs
+// silently for a listed unit's main process, for a terminal tab ssh-ing to
+// a known host, for any process's direct login to a host allowed by name
+// and for listed SSHSIG namespaces, and asks through galley for everything
+// else.
 package main
 
 import (
@@ -23,25 +24,25 @@ import (
 )
 
 const (
-	keyDir     = "/var/lib/frisket-signer"
+	keyDir     = "/var/lib/quoin-signer"
 	knownHosts = "/etc/ssh/ssh_known_hosts"
 	tpmDevice  = "/dev/tpmrm0"
 )
 
-const usage = `frisket-signer -- SSH keys in the TPM, asked for through galley
+const usage = `quoin-signer -- SSH keys in the TPM, asked for through galley
 
-  frisket-signer serve [-config FILE]
+  quoin-signer serve [-config FILE]
         Serve the agent socket systemd passes as the fd named agent, to
         forUser's uid only, with the keys in ` + keyDir + `, under the
         settings in FILE (default ` + defaultConfig + `).
 
-  frisket-signer check FILE
+  quoin-signer check FILE
         Read FILE as serve would, and say what is wrong with it.
 
-  frisket-signer schema
+  quoin-signer schema
         Print the config file's JSON Schema.
 
-  frisket-signer keygen -out DIR [-comment C] [--no-da]
+  quoin-signer keygen -out DIR [-comment C] [--no-da]
         Make a key in the TPM and write DIR/id_ecdsa.tpm and DIR/id_ecdsa.pub
         in stock ssh-tpm-agent's format.
 `
@@ -65,14 +66,14 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:
-		fmt.Fprintf(os.Stderr, "frisket-signer: unknown command %q\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "quoin-signer: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(2)
 		}
-		fmt.Fprintf(os.Stderr, "frisket-signer %s: %v\n", os.Args[1], err)
+		fmt.Fprintf(os.Stderr, "quoin-signer %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
 }
@@ -127,7 +128,7 @@ func runServe(argv []string) error {
 			return err
 		}
 	}
-	log.Info("frisket-signer serve", "config", *path, "user", cfg.ForUser, "keys", len(s.Keys),
+	log.Info("quoin-signer serve", "config", *path, "user", cfg.ForUser, "keys", len(s.Keys),
 		"terminal", cfg.Terminal, "sshsig", cfg.SSHSIG, "hosts", cfg.SSH.Hosts, "policy", cfg.Policy,
 		"loginSigners", cfg.LoginSigners, "policySigners", cfg.PolicySigners)
 	return s.Serve(ln)

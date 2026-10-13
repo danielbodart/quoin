@@ -96,7 +96,7 @@ func (s *session) sign(req *request) {
 	c := s.challenge
 	s.challenge = nil
 	if req.failed != nil {
-		msg := "frisket-sudo: " + *req.failed
+		msg := "quoin-sudo: " + *req.failed
 		s.recordRemote(c, "refuse", "agent", "", []any{"reason", *req.failed})
 		s.reply(replyNo, msg[:min(len(msg), maxMessage)])
 		return
@@ -109,7 +109,7 @@ func (s *session) sign(req *request) {
 	}
 	if key == nil {
 		s.recordRemote(c, "refuse", "not a listed key", "", nil)
-		s.reply(replyNo, "frisket-sudo: not a listed key")
+		s.reply(replyNo, "quoin-sudo: not a listed key")
 		return
 	}
 	fp := ssh.FingerprintSHA256(key)

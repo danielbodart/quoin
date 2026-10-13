@@ -57,8 +57,8 @@ func TestTheMessageEncodesToTheGoldenBytesAndParsesBackFieldForField(t *testing.
 	if !bytes.Equal(b, want) {
 		t.Fatalf("got\n%x\nwant\n%x", b, want)
 	}
-	if !bytes.HasPrefix(b, []byte("\x00\x00\x00\x0ffrisket-sudo-v1")) {
-		t.Errorf("starts %x", b[:19])
+	if !bytes.HasPrefix(b, []byte("\x00\x00\x00\x0dquoin-sudo-v1")) {
+		t.Errorf("starts %x", b[:17])
 	}
 	m, err := Parse(want)
 	if err != nil {
@@ -96,7 +96,7 @@ func TestAMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 		"an unknown level":  enc(func(m *Message) { m.Level = "normal" }),
 		"a missing field":   good[:len(good)-4],
 		"trailing bytes":    append(bytes.Clone(good), 0),
-		"another magic":     append([]byte("\x00\x00\x00\x0ffrisket-sudo-v2"), good[19:]...),
+		"another magic":     append([]byte("\x00\x00\x00\x0dquoin-sudo-v2"), good[17:]...),
 		"a count past data": countPast(good),
 		"empty":             nil,
 	} {
@@ -133,12 +133,12 @@ func TestMarshalRefusesWhatParseWould(t *testing.T) {
 }
 
 func TestOnlyTheLengthPrefixedMagicHasIt(t *testing.T) {
-	for _, b := range []string{"frisket-sudo-v1", "\x00\x00\x00\x10frisket-sudo-v1", "SSHSIG", "\x00\x00\x00\x0ffrisket-sudo-v"} {
+	for _, b := range []string{"quoin-sudo-v1", "\x00\x00\x00\x0equoin-sudo-v1", "SSHSIG", "\x00\x00\x00\x0dquoin-sudo-v"} {
 		if HasMagic([]byte(b)) {
 			t.Errorf("%q has the magic", b)
 		}
 	}
-	if !HasMagic([]byte("\x00\x00\x00\x0ffrisket-sudo-v1")) {
+	if !HasMagic([]byte("\x00\x00\x00\x0dquoin-sudo-v1")) {
 		t.Error("the magic alone has no magic")
 	}
 }

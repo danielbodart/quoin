@@ -410,7 +410,7 @@ func TestAWrongPasswordBringsTheDialogBack(t *testing.T) {
 	a.reply <- password("correct", 15*time.Minute, 900)
 	c.want(replyPassword, "correct")
 	c.send(verified(true))
-	if k, m := c.read(); k != replyYes || !strings.HasPrefix(m, "frisket-sudo: password remembered for this claude until ") {
+	if k, m := c.read(); k != replyYes || !strings.HasPrefix(m, "quoin-sudo: password remembered for this claude until ") {
 		t.Fatalf("got %q %q", k, m)
 	}
 	if w := h.g.windows[proc{100, 200}]; w.until != time.Hour+15*time.Minute {
@@ -511,7 +511,7 @@ func TestOnlyAVerifiedDialogPasswordOpensAWindow(t *testing.T) {
 		}},
 		{"a danger dialog", func(h *harness) {
 			c := h.sudo(500)
-			c.send(approval(restart(claude(100), "frisket.service")))
+			c.send(approval(restart(claude(100), "quoin-sudo.service")))
 			h.next().reply <- password("pw", 15*time.Minute, 900)
 			c.want(replyPassword, "pw")
 			c.send(verified(true))
@@ -685,7 +685,7 @@ func (h *harness) describe(cmd sudoCmd) *sudoReq {
 func TestTheGuardUnitsAreDanger(t *testing.T) {
 	h := newHarness(t)
 	for _, argv := range [][]string{
-		{"systemctl", "stop", "frisket.service"},
+		{"systemctl", "stop", "quoin-sudo.service"},
 		{"systemctl", "status", "galley"},
 		{"systemctl", "restart", "sshd.service"},
 		{"systemctl", "--user", "stop", "nftables.service"},
@@ -709,7 +709,7 @@ func TestTheHostsDangerRulesAreDangerBesideTheGuardUnits(t *testing.T) {
 	}
 	for argv, want := range map[string]string{
 		"systemctl restart postgresql.service": "touches the database",
-		"systemctl stop frisket.service":       "touches a unit that guards this machine",
+		"systemctl stop quoin-sudo.service":    "touches a unit that guards this machine",
 	} {
 		a := h.describe(sudoCmd{links: claude(100), program: bin + "systemctl", argv: strings.Fields(argv)})
 		if len(a.danger) != 1 || a.danger[0] != want {
@@ -763,7 +763,7 @@ func TestShellAndEnvWrappersAreClassifiedByEveryInnerCommand(t *testing.T) {
 		{sudoCmd{program: bin + "bash", argv: []string{"bash", "-c", "ls && /bin/systemctl status galley.service"}}, []string{guard}},
 		{sudoCmd{program: bin + "bash", argv: []string{"bash", "-c", "ls; id"}}, nil},
 		{sudoCmd{program: bin + "sh", argv: []string{"sh", "-c", "$(printf x)"}}, []string{unreadable}},
-		{sudoCmd{program: bin + "env", argv: []string{"env", "systemctl", "stop", "frisket"}}, []string{guard}},
+		{sudoCmd{program: bin + "env", argv: []string{"env", "systemctl", "stop", "quoin-sudo"}}, []string{guard}},
 		{sudoCmd{program: bin + "env", argv: []string{"env", "FOO=1", "id"}}, []string{unreadable}},
 		{sudoCmd{program: bin + "env", argv: []string{"env", "-i", "id"}}, []string{unreadable}},
 		{sudoCmd{program: bin + "env", argv: []string{"env", "sh", "-c", "env systemctl stop sshd"}}, []string{guard}},
@@ -846,7 +846,7 @@ func FuzzNoRequestCrashesTheGate(f *testing.F) {
 	f.Add(verified(true))
 	f.Add(append(frame(kindCheckIn), frame(kindApproval, record('k', []byte{1, 2, 3}), record('t', nil))...))
 	f.Add(append(frame(kindCheckIn), frame(kindApproval, record('c', []byte("command=x")), record('a', nil))...))
-	f.Add([]byte("FSUD\x02A\xff\xff\xff\xff"))
+	f.Add([]byte("QSUD\x02A\xff\xff\xff\xff"))
 	remote := remoteCmd("foo")
 	remoteCheckIn := frame(kindCheckIn, record('m', nil))
 	f.Add(append(remoteCheckIn, approval(remote)...))

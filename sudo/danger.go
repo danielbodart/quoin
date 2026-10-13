@@ -1,4 +1,4 @@
-// Package sudo holds frisket-sudo's danger catalogue: an Ask match is a
+// Package sudo holds quoin-sudo's danger catalogue: an Ask match is a
 // danger command, and its operation's summary the reason line.
 package sudo
 

@@ -10,12 +10,12 @@ import (
 	"strings"
 )
 
-const defaultConfig = "/etc/frisket-policy/config.json"
+const defaultConfig = "/etc/quoin/courier.json"
 
 // config is the courier's settings file, its keys named as the NixOS
 // module's options are.
 type config struct {
-	// FileName is a project's policy file's name. frisket has no default:
+	// FileName is a project's policy file's name. There is no default:
 	// what a project calls it is the launcher's choice.
 	FileName string `json:"fileName"`
 	// AllowedSigners is the file a written policy's signature must verify
@@ -76,7 +76,7 @@ func (c *config) validate() error {
 // schema is the config file's JSON Schema.
 const schema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "frisket-policy config",
+  "title": "quoin-courier config",
   "type": "object",
   "additionalProperties": false,
   "required": ["fileName", "allowedSigners"],

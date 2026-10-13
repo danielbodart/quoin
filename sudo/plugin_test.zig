@@ -9,7 +9,7 @@ const c = @import("abi").c;
 const oracle = @import("oracle");
 const testing = std.testing;
 
-const gate_path = "frisket-sudo-test-gate.sock";
+const gate_path = "quoin-sudo-test-gate.sock";
 
 // ---- sudo's side ----
 
@@ -56,18 +56,18 @@ fn me() struct { user: [*:0]const u8, uid: [*:0]const u8, option: [*:0]const u8 
 fn open(user_info: [*c]const [*c]u8, options: [*c]const [*c]u8, argv: [*c]const [*c]u8, optind: c_int) c_int {
     var errstr: [*c]const u8 = null;
     const none = [_:null]?[*:0]const u8{};
-    return plugin.frisket_audit.open.?(c.SUDO_API_VERSION_MAJOR << 16, null, printf, arr(&none), user_info, optind, argv, arr(&none), options, &errstr);
+    return plugin.quoin_audit.open.?(c.SUDO_API_VERSION_MAJOR << 16, null, printf, arr(&none), user_info, optind, argv, arr(&none), options, &errstr);
 }
 
 fn accept(errstr: *[*c]const u8) c_int {
     const info = [_:null]?[*:0]const u8{"command=/run/current-system/sw/bin/id"};
     const argv = [_:null]?[*:0]const u8{"id"};
     const envp = [_:null]?[*:0]const u8{"PATH=/run/current-system/sw/bin"};
-    return plugin.frisket_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, arr(&info), arr(&argv), arr(&envp), errstr);
+    return plugin.quoin_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, arr(&info), arr(&argv), arr(&envp), errstr);
 }
 
 fn close() void {
-    plugin.frisket_audit.close.?(0, 0);
+    plugin.quoin_audit.close.?(0, 0);
 }
 
 // ---- the gate's side ----
@@ -206,7 +206,7 @@ test "garbage, a message that is not printable, an 'M' to a local 'A' and a pass
     const r = try runGated(&.{"W\x00\x02pw"}, &errstr);
     try testing.expectEqual(@as(c_int, 0), r.rc);
     try testing.expectEqualStrings("gate not running", std.mem.span(errstr));
-    try testing.expectEqualStrings("frisket-sudo: gate not running (systemctl status frisket-sudo.socket); sudo in a terminal is not gated", saidLine(0));
+    try testing.expectEqualStrings("quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated", saidLine(0));
 }
 
 test "a gate that does not answer 'C' within 250 ms is not running, and the command is refused" {
@@ -224,7 +224,7 @@ test "a gate that does not answer 'C' within 250 ms is not running, and the comm
     try testing.expectEqual(@as(c_int, 1), open(arr(&ui), arr(&opts), arr(&argv), 1));
     const took = t.read();
     try testing.expect(took >= 240 * std.time.ns_per_ms and took < 2 * std.time.ns_per_s);
-    try testing.expectEqualStrings("frisket-sudo: gate not running (systemctl status frisket-sudo.socket); sudo in a terminal is not gated", saidLine(0));
+    try testing.expectEqualStrings("quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated", saidLine(0));
     var errstr: [*c]const u8 = null;
     try testing.expectEqual(@as(c_int, 0), accept(&errstr));
     try testing.expectEqualStrings("gate not running", std.mem.span(errstr));
@@ -243,7 +243,7 @@ test "sudo's accept for a -l or -v the policy allowed passes silently, with no c
         for ([_][*:0]const u8{ "command=list", "command=validate" }) |cmd| {
             const info = [_:null]?[*:0]const u8{cmd};
             var errstr: [*c]const u8 = null;
-            try testing.expectEqual(@as(c_int, 1), plugin.frisket_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, arr(&info), arr(&argv), arr(&info), &errstr));
+            try testing.expectEqual(@as(c_int, 1), plugin.quoin_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, arr(&info), arr(&argv), arr(&info), &errstr));
             try testing.expect(errstr == null);
         }
         try testing.expectEqual(@as(usize, 0), said_n);
@@ -254,7 +254,7 @@ test "sudo's accept for a -l or -v the policy allowed passes silently, with no c
 test "an accept on behalf of sudo's front end, after the policy's, passes" {
     var errstr: [*c]const u8 = null;
     const info = [_:null]?[*:0]const u8{"command=/run/current-system/sw/bin/id"};
-    try testing.expectEqual(@as(c_int, 1), plugin.frisket_audit.accept.?("sudo", c.SUDO_FRONT_END, arr(&info), arr(&info), arr(&info), &errstr));
+    try testing.expectEqual(@as(c_int, 1), plugin.quoin_audit.accept.?("sudo", c.SUDO_FRONT_END, arr(&info), arr(&info), arr(&info), &errstr));
 }
 
 // ---- open() on any input ----

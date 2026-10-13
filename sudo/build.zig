@@ -1,7 +1,7 @@
-//! frisket-sudo's Zig: install, test, lint, fmt and analyze steps.
+//! quoin-sudo's Zig: install, test, lint, fmt and analyze steps.
 const std = @import("std");
 
-const gate_path = "/run/frisket-sudo/gate.sock";
+const gate_path = "/run/quoin-sudo/gate.sock";
 const gate_uid = 0;
 
 pub fn build(b: *std.Build) void {
@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     if (sudo_version) |v| {
         const cfg = config(b, gate_path, gate_uid, if (misread) .misread else if (log_ids) .log_ids else .stock, v);
         const lib = plugin(b, target, optimize, modules(b, target, optimize), cfg, true);
-        install.dependOn(&b.addInstallFileWithDir(lib.getEmittedBin(), .lib, "frisket_sudo.so").step);
+        install.dependOn(&b.addInstallFileWithDir(lib.getEmittedBin(), .lib, "quoin_sudo.so").step);
         b.installArtifact(pamHelper(b, target, optimize, cfg, true));
         b.installArtifact(checkPlugin(b, target, optimize, cfg, true));
     } else {
@@ -31,13 +31,13 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addFail("needs -Doracle=PATH, sudo's parse_args built as a test oracle").step);
     } else if (b.lazyDependency("minish", .{ .target = target, .optimize = optimize })) |minish| {
         const uid = std.os.linux.getuid();
-        const cfg = config(b, "frisket-sudo-test-gate.sock", uid, .stock, "test");
+        const cfg = config(b, "quoin-sudo-test-gate.sock", uid, .stock, "test");
         for ([_][]const u8{ "fd", "wire", "chain", "agent", "ids" }) |name| {
             const m = modules(b, target, optimize);
             const t = b.addTest(.{ .name = name, .root_module = m.get(name) });
             test_step.dependOn(&b.addRunArtifact(t).step);
         }
-        const pam_cfg = config(b, "frisket-sudo-test-pam.sock", uid, .stock, "test");
+        const pam_cfg = config(b, "quoin-sudo-test-pam.sock", uid, .stock, "test");
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "pam", .root_module = pamHelper(b, target, optimize, pam_cfg, false).root_module })).step);
 
         const opts = b.addOptions();
@@ -60,7 +60,7 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(pt).step);
 
-        const misread_cfg = config(b, "frisket-sudo-test-gate.sock", uid, .misread, "test");
+        const misread_cfg = config(b, "quoin-sudo-test-gate.sock", uid, .misread, "test");
         const mm = modules(b, target, optimize);
         const mt = b.addTest(.{
             .name = "misread",
@@ -77,7 +77,7 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(mt).step);
 
-        const remote_cfg = config(b, "frisket-sudo-test-remote-gate.sock", uid, .remote, "test");
+        const remote_cfg = config(b, "quoin-sudo-test-remote-gate.sock", uid, .remote, "test");
         const rm = modules(b, target, optimize);
         const rt = b.addTest(.{
             .name = "remote",
@@ -122,7 +122,7 @@ pub fn build(b: *std.Build) void {
         analyze_step.dependOn(&b.addFail("needs -Ddev=true").step);
     } else if (b.lazyDependency("zwanzig", .{ .target = b.graph.host, .optimize = .ReleaseFast })) |zw| {
         const exe = zw.artifact("zwanzig");
-        for ([_][]const u8{ "fd.zig", "wire.zig", "chain.zig", "agent.zig", "ids.zig", "frisket_sudo.zig", "frisket-sudo-pam.zig", "frisket-sudo-check-plugin.zig" }) |file| {
+        for ([_][]const u8{ "fd.zig", "wire.zig", "chain.zig", "agent.zig", "ids.zig", "quoin_sudo.zig", "quoin-sudo-pam.zig", "quoin-sudo-check-plugin.zig" }) |file| {
             const run = b.addRunArtifact(exe);
             run.addArg("--config");
             run.addFileArg(b.path(".zwanzig.json"));
@@ -213,10 +213,10 @@ fn modules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
 
 fn plugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, m: Modules, cfg: *std.Build.Module, strip: bool) *std.Build.Step.Compile {
     return b.addLibrary(.{
-        .name = "frisket_sudo",
+        .name = "quoin_sudo",
         .linkage = .dynamic,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("frisket_sudo.zig"),
+            .root_source_file = b.path("quoin_sudo.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -237,9 +237,9 @@ fn plugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
 fn pamHelper(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, cfg: *std.Build.Module, strip: bool) *std.Build.Step.Compile {
     const m = modules(b, target, optimize);
     return b.addExecutable(.{
-        .name = "frisket-sudo-pam",
+        .name = "quoin-sudo-pam",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("frisket-sudo-pam.zig"),
+            .root_source_file = b.path("quoin-sudo-pam.zig"),
             .target = target,
             .optimize = optimize,
             .strip = strip,
@@ -254,9 +254,9 @@ fn pamHelper(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 
 fn checkPlugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, cfg: *std.Build.Module, strip: bool) *std.Build.Step.Compile {
     return b.addExecutable(.{
-        .name = "frisket-sudo-check-plugin",
+        .name = "quoin-sudo-check-plugin",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("frisket-sudo-check-plugin.zig"),
+            .root_source_file = b.path("quoin-sudo-check-plugin.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -288,11 +288,11 @@ fn checkPluginCases(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         }),
     }).getEmittedBin();
     const cases = [_]struct { so: std.Build.LazyPath, symbol: []const u8, version: []const u8, code: u8, stderr: []const u8 }{
-        .{ .so = so, .symbol = "frisket_audit", .version = "1.2.3", .code = 0, .stderr = "" },
-        .{ .so = so, .symbol = "frisket_approval", .version = "1.2.3", .code = 1, .stderr = "no symbol frisket_approval" },
-        .{ .so = so, .symbol = "frisket_audit", .version = "1.2.4", .code = 1, .stderr = "is built for sudo 1.2.3, not 1.2.4" },
-        .{ .so = b.path("build.zig"), .symbol = "frisket_audit", .version = "1.2.3", .code = 1, .stderr = "cannot load" },
-        .{ .so = planted, .symbol = "frisket_audit", .version = "1.2.3", .code = 1, .stderr = "is plugin type 1, not 3 (audit)" },
+        .{ .so = so, .symbol = "quoin_audit", .version = "1.2.3", .code = 0, .stderr = "" },
+        .{ .so = so, .symbol = "quoin_approval", .version = "1.2.3", .code = 1, .stderr = "no symbol quoin_approval" },
+        .{ .so = so, .symbol = "quoin_audit", .version = "1.2.4", .code = 1, .stderr = "is built for sudo 1.2.3, not 1.2.4" },
+        .{ .so = b.path("build.zig"), .symbol = "quoin_audit", .version = "1.2.3", .code = 1, .stderr = "cannot load" },
+        .{ .so = planted, .symbol = "quoin_audit", .version = "1.2.3", .code = 1, .stderr = "is plugin type 1, not 3 (audit)" },
     };
     for (cases) |c| {
         const run = b.addRunArtifact(check);

@@ -70,7 +70,7 @@ type ExecRules struct {
 }
 
 // never is that rule's pattern.
-const never = "frisket-sudo-no-command"
+const never = "quoin-sudo-no-command"
 
 var loginName = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
 

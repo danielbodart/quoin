@@ -1,4 +1,4 @@
-// Command frisket-sudo is the gate frisket-sudo's plugin asks about each
+// Command quoin-sudo is the gate quoin-sudo's plugin asks about each
 // no-tty sudo: one galley item per command, and each claude's password
 // window.
 package main
@@ -17,17 +17,17 @@ import (
 	"github.com/danielbodart/quoin/sdnotify"
 )
 
-const usage = `frisket-sudo -- the gate for sudo with no terminal, asked through galley
+const usage = `quoin-sudo -- the gate for sudo with no terminal, asked through galley
 
-  frisket-sudo serve [-config FILE]
+  quoin-sudo serve [-config FILE]
         Serve the gate socket systemd passes as the fd named gate, asking
         forUser through galley, under the settings in FILE (default
         ` + defaultConfig + `).
 
-  frisket-sudo check FILE
+  quoin-sudo check FILE
         Read FILE as serve would, and say what is wrong with it.
 
-  frisket-sudo schema
+  quoin-sudo schema
         Print the config file's JSON Schema.
 `
 
@@ -47,14 +47,14 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:
-		fmt.Fprintf(os.Stderr, "frisket-sudo: unknown command %q\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "quoin-sudo: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(2)
 		}
-		fmt.Fprintf(os.Stderr, "frisket-sudo %s: %v\n", os.Args[1], err)
+		fmt.Fprintf(os.Stderr, "quoin-sudo %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
 }
@@ -96,7 +96,7 @@ func runServe(argv []string) error {
 			return err
 		}
 	}
-	log.Info("frisket-sudo serve", "config", *path, "user", cfg.ForUser, "remote_keys", len(cfg.keys), "danger", cfg.Danger,
+	log.Info("quoin-sudo serve", "config", *path, "user", cfg.ForUser, "remote_keys", len(cfg.keys), "danger", cfg.Danger,
 		"exec", cfg.Exec, "policy", cfg.Policy)
 	return gate.Serve(ln)
 }

@@ -12,7 +12,7 @@ func TestTheCatalogueCompilesAndEveryMatchAsksWithAReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, unit := range []string{"frisket.service", "galley.service", "sshd.service", "nftables.service", "debug-shell.service"} {
+	for _, unit := range []string{"quoin-sudo.service", "galley.service", "sshd.service", "nftables.service", "debug-shell.service"} {
 		d := rules.DecideWords([]string{"systemctl", "status", unit})
 		if d.Outcome != execrule.Ask || d.Rule == execrule.RuleUnmatched || d.Operation == nil || d.Operation.Summary == "" {
 			t.Errorf("systemctl status %s: %+v", unit, d)
@@ -57,10 +57,10 @@ func TestAnExtraRuleCannotTakeTheCataloguesDangerAway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := rules.DecideWords([]string{"systemctl", "stop", "frisket.service"}); d.Outcome != execrule.Ask || d.Operation.Summary != "touches a unit that guards this machine" {
+	if d := rules.DecideWords([]string{"systemctl", "stop", "quoin-sudo.service"}); d.Outcome != execrule.Ask || d.Operation.Summary != "touches a unit that guards this machine" {
 		t.Errorf("%+v", d)
 	}
-	if d := rules.DecideWords([]string{"systemctl", "status", "frisket.service"}); d.Outcome != execrule.Ask {
+	if d := rules.DecideWords([]string{"systemctl", "status", "quoin-sudo.service"}); d.Outcome != execrule.Ask {
 		t.Errorf("%+v", d)
 	}
 }
@@ -73,7 +73,7 @@ func TestABadExtraRuleIsRefused(t *testing.T) {
 		"empty glob":          {"systemctl **": {Args: map[string]string{"": "x"}}},
 		"double space":        {"reboot  now": {Reason: "x"}},
 		"** not last":         {"** reboot": {Reason: "x"}},
-		"the catalogue's own": {"systemctl **": {Args: map[string]string{"frisket*": "x"}}},
+		"the catalogue's own": {"systemctl **": {Args: map[string]string{"quoin*": "x"}}},
 	} {
 		if _, err := Danger(extra); err == nil || !strings.HasPrefix(err.Error(), "danger") {
 			t.Errorf("%s: %v", name, err)

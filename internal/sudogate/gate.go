@@ -1,4 +1,4 @@
-// Package sudogate decides each no-tty sudo that frisket-sudo's plugin sends
+// Package sudogate decides each no-tty sudo that quoin-sudo's plugin sends
 // it: check-ins, one galley item per command, each claude's password
 // window, pinned to the galley process that took the password, and in remote
 // mode the message the forwarded agent signs in place of a password.
@@ -429,7 +429,7 @@ func (s *session) verify(req *request) {
 	s.g.open(proc{a.r.Anchor.Pid, a.r.Anchor.Start}, window{until: until, galley: pin})
 	at := time.Now().Add(until - s.g.now()).Format("15:04")
 	s.record(a, "allow", "verified", []any{"window_until", at})
-	s.reply(replyYes, "frisket-sudo: password remembered for this claude until "+at)
+	s.reply(replyYes, "quoin-sudo: password remembered for this claude until "+at)
 }
 
 // decide asks about a, outside a window with the dialog and inside one with

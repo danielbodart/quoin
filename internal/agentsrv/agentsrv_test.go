@@ -868,7 +868,7 @@ func FuzzNoAgentMessageCrashesTheParser(f *testing.F) {
 // A raw SSHSIG in a project policy's namespace is refused unasked, even
 // listed as allow and from a login signer, with its own reason in the journal.
 func TestARawSignInAPolicyNamespaceIsRefusedUnasked(t *testing.T) {
-	for _, ns := range []string{"frisket-policy:~/Projects/foo", "frisket-policy:/srv/x", "frisket-policy", "frisket-policyx"} {
+	for _, ns := range []string{"quoin-policy:~/Projects/foo", "quoin-policy:/srv/x", "quoin-policy", "quoin-policyx"} {
 		h := newHarness(t, 1, func(s *Server) { s.SSHSIG = map[string]Rule{ns: Allow, "git": Allow} })
 		h.loginSigner.Store(true)
 		data := append([]byte("SSHSIG"), ssh.Marshal(struct {
@@ -879,7 +879,7 @@ func TestARawSignInAPolicyNamespaceIsRefusedUnasked(t *testing.T) {
 			t.Errorf("%s was signed", ns)
 		}
 		h.nothingAsked()
-		if log := h.log.String(); !strings.Contains(log, `"reason":"a frisket-policy namespace is never signed raw"`) || strings.Contains(log, `"outcome":"sign"`) {
+		if log := h.log.String(); !strings.Contains(log, `"reason":"a quoin-policy namespace is never signed raw"`) || strings.Contains(log, `"outcome":"sign"`) {
 			t.Errorf("%s: %s", ns, log)
 		}
 	}

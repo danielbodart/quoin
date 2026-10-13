@@ -4,7 +4,7 @@ const std = @import("std");
 const chain = @import("chain");
 const agent = @import("agent");
 
-pub const magic = "FSUD";
+pub const magic = "QSUD";
 pub const version = 2;
 pub const max_request = 1 << 20;
 pub const max_message = 512;
@@ -262,14 +262,14 @@ var test_buf: [max_request]u8 = undefined;
 
 test "'C', 'V' and 'S' frame to their bytes" {
     var c: [header_len]u8 = undefined;
-    try testing.expectEqualSlices(u8, "FSUD\x02C\x00\x00\x00\x00", empty(&c, .check_in));
+    try testing.expectEqualSlices(u8, "QSUD\x02C\x00\x00\x00\x00", empty(&c, .check_in));
     var cm: [header_len + record_head]u8 = undefined;
-    try testing.expectEqualSlices(u8, "FSUD\x02C\x00\x00\x00\x00", checkIn(&cm, false));
-    try testing.expectEqualSlices(u8, "FSUD\x02C\x00\x00\x00\x05m\x00\x00\x00\x00", checkIn(&cm, true));
+    try testing.expectEqualSlices(u8, "QSUD\x02C\x00\x00\x00\x00", checkIn(&cm, false));
+    try testing.expectEqualSlices(u8, "QSUD\x02C\x00\x00\x00\x05m\x00\x00\x00\x00", checkIn(&cm, true));
     var v: [header_len + record_head + 1]u8 = undefined;
-    try testing.expectEqualSlices(u8, "FSUD\x02V\x00\x00\x00\x06r\x00\x00\x00\x01\x01", verify(&v, true));
-    try testing.expectEqualSlices(u8, "FSUD\x02S\x00\x00\x00\x0fp\x00\x00\x00\x02kbg\x00\x00\x00\x03sig", signature(&sig_buf, "kb", "sig"));
-    try testing.expectEqualSlices(u8, "FSUD\x02S\x00\x00\x00\x09f\x00\x00\x00\x04why?", signFailed(&sig_buf, "why?"));
+    try testing.expectEqualSlices(u8, "QSUD\x02V\x00\x00\x00\x06r\x00\x00\x00\x01\x01", verify(&v, true));
+    try testing.expectEqualSlices(u8, "QSUD\x02S\x00\x00\x00\x0fp\x00\x00\x00\x02kbg\x00\x00\x00\x03sig", signature(&sig_buf, "kb", "sig"));
+    try testing.expectEqualSlices(u8, "QSUD\x02S\x00\x00\x00\x09f\x00\x00\x00\x04why?", signFailed(&sig_buf, "why?"));
 }
 
 var sig_buf: [max_signature_request]u8 = undefined;
@@ -280,12 +280,12 @@ test "'A' frames a link and one record per entry, and 'm' when remote" {
     const none = [_:null]?[*:0]const u8{};
     const argv = [_:null]?[*:0]const u8{"id"};
     const req = try approval(&test_buf, &links, @ptrCast(&ui), @ptrCast(&none), @ptrCast(&none), @ptrCast(&argv), null, false);
-    const want = "FSUD\x02A\x00\x00\x00\x4f" ++
+    const want = "QSUD\x02A\x00\x00\x00\x4f" ++
         "k\x00\x00\x00\x29\x00\x00\x00\x07\x00\x00\x00\x08\x01\x02\x03\x04\x05\x06\x07\x08\x00\x00\x03\xe8\x00\x00\x00\x00\x00\x04bash\x00\x09bash\x00-c\x00x" ++
         "u\x00\x00\x00\x08user=dan" ++ "u\x00\x00\x00\x08uid=1000" ++ "a\x00\x00\x00\x02id";
     try testing.expectEqualSlices(u8, want, req);
     const remote = try approval(&test_buf, &links, @ptrCast(&ui), @ptrCast(&none), @ptrCast(&none), @ptrCast(&argv), null, true);
-    try testing.expectEqualSlices(u8, "FSUD\x02A\x00\x00\x00\x54", remote[0..10]);
+    try testing.expectEqualSlices(u8, "QSUD\x02A\x00\x00\x00\x54", remote[0..10]);
     try testing.expectEqualSlices(u8, want[10..] ++ "m\x00\x00\x00\x00", remote[10..]);
 }
 
@@ -332,7 +332,7 @@ test "a reply is refused when its kind, length or place is wrong" {
     try testing.expect(lengthOk(.yes, 512) and !lengthOk(.yes, 513));
     try testing.expect(lengthOk(.password, 1023) and !lengthOk(.password, 1024));
     try testing.expect(lengthOk(.message, max_request) and !lengthOk(.message, max_request + 1));
-    try testing.expect(printable("frisket-sudo: ok ~"));
+    try testing.expect(printable("quoin-sudo: ok ~"));
     try testing.expect(!printable("a\nb"));
 }
 

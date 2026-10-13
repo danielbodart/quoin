@@ -3,4 +3,4 @@
 
 const abi = @import("abi");
 
-export var frisket_audit: abi.c.struct_audit_plugin = .{ .type = 1, .version = abi.api_version };
+export var quoin_audit: abi.c.struct_audit_plugin = .{ .type = 1, .version = abi.api_version };

@@ -22,10 +22,10 @@ test "accept() refuses a no-tty, local sudo of the gated user with no check-in, 
     const argv = [_:null]?[*:0]const u8{ "sudo", "id" };
     const none = [_:null]?[*:0]const u8{};
     var errstr: [*c]const u8 = null;
-    try testing.expectEqual(@as(c_int, 1), plugin.frisket_audit.open.?(c.SUDO_API_VERSION_MAJOR << 16, null, printf, @ptrCast(&none), @ptrCast(&ui), 1, @ptrCast(&argv), @ptrCast(&none), @ptrCast(&opts), &errstr));
+    try testing.expectEqual(@as(c_int, 1), plugin.quoin_audit.open.?(c.SUDO_API_VERSION_MAJOR << 16, null, printf, @ptrCast(&none), @ptrCast(&ui), 1, @ptrCast(&argv), @ptrCast(&none), @ptrCast(&opts), &errstr));
     try testing.expectEqual(@as(usize, 0), printed);
     const info = [_:null]?[*:0]const u8{"command=/run/current-system/sw/bin/id"};
-    try testing.expectEqual(@as(c_int, 0), plugin.frisket_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, @ptrCast(&info), @ptrCast(&argv), @ptrCast(&none), &errstr));
+    try testing.expectEqual(@as(c_int, 0), plugin.quoin_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, @ptrCast(&info), @ptrCast(&argv), @ptrCast(&none), &errstr));
     try testing.expectEqualStrings("gate not running", std.mem.span(errstr));
-    plugin.frisket_audit.close.?(0, 0);
+    plugin.quoin_audit.close.?(0, 0);
 }

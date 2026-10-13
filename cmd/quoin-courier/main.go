@@ -1,4 +1,4 @@
-// Command frisket-policy is the policy courier: it runs as the user, with no
+// Command quoin-courier is the policy courier: it runs as the user, with no
 // network, and carries a project's signed policy file between the user's
 // home and the system units that verify it, the signer and the sudo gate,
 // which cannot read the home themselves.
@@ -25,27 +25,27 @@ import (
 	"github.com/danielbodart/quoin/sdnotify"
 )
 
-const defaultSocket = "/run/frisket-policy/sock"
+const defaultSocket = "/run/quoin-courier/sock"
 
-const usage = `frisket-policy -- a project's signed policy file, carried from the user's home
+const usage = `quoin-courier -- a project's signed policy file, carried from the user's home
 
-  frisket-policy serve [-config FILE]
+  quoin-courier serve [-config FILE]
         Serve the socket systemd passes as the fd named courier, as the user
         whose projects they are, to the units FILE's peers name, each as its
         user, under the settings in FILE (default ` + defaultConfig + `).
 
-  frisket-policy check FILE
+  quoin-courier check FILE
         Read FILE as serve would, and say what is wrong with it.
 
-  frisket-policy schema
+  quoin-courier schema
         Print the config file's JSON Schema.
 
-  frisket-policy read [-socket PATH] PID [START]
+  quoin-courier read [-socket PATH] PID [START]
         Ask the courier for the policy file above PID's working directory,
         START being PID's start time (default: read from /proc now), and
         print its answer as JSON.
 
-  frisket-policy write [-socket PATH] -root DIR -old DIGEST -file POLICY -sig SIG
+  quoin-courier write [-socket PATH] -root DIR -old DIGEST -file POLICY -sig SIG
         Ask the courier to replace DIR's policy file with POLICY and SIG,
         if it is still the one DIGEST names ("" for none).
 `
@@ -71,14 +71,14 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:
-		fmt.Fprintf(os.Stderr, "frisket-policy: unknown command %q\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "quoin-courier: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(2)
 		}
-		fmt.Fprintf(os.Stderr, "frisket-policy %s: %v\n", os.Args[1], err)
+		fmt.Fprintf(os.Stderr, "quoin-courier %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
 }
@@ -130,7 +130,7 @@ func runServe(argv []string) error {
 			return err
 		}
 	}
-	log.Info("frisket-policy serve", "config", *path, "user", me.Username, "home", me.HomeDir,
+	log.Info("quoin-courier serve", "config", *path, "user", me.Username, "home", me.HomeDir,
 		"fileName", cfg.FileName, "allowedSigners", cfg.AllowedSigners, "peers", cfg.Peers)
 	return s.Serve(ln)
 }

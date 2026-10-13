@@ -1,15 +1,14 @@
-// Package sdnotify speaks the two halves of systemd's protocol that frisket
+// Package sdnotify speaks the two halves of systemd's protocol a service
 // needs, with the standard library and nothing else: sd_notify, including
 // handing descriptors to the service's file-descriptor store, and the
-// LISTEN_FDS convention by which they come back.
+// LISTEN_FDS convention by which they come back, which a socket-activated
+// unit is handed its listeners by.
 //
-// WHY THE FD STORE. A session's listeners live in a sandbox's network
-// namespace and cannot be reopened from a path: nothing outside the sandbox can
-// create them again without root entering the namespace, and root's hook has
-// long since returned. So the only way a `nixos-rebuild switch` or a crash does
-// not sever a session that has been running for hours is for PID 1 to hold a
-// copy across the gap. They are stored when the session is created, not at
-// shutdown, so a crash is covered too.
+// WHY THE FD STORE. A listener that cannot be reopened from a path -- one
+// in a sandbox's network namespace, which nothing outside the sandbox can
+// create again without root entering the namespace -- survives a
+// `nixos-rebuild switch` or a crash only if PID 1 holds a copy across the
+// gap. Storing it when it is made, not at shutdown, covers a crash too.
 package sdnotify
 
 import (

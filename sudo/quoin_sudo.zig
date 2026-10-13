@@ -1,4 +1,4 @@
-//! frisket_audit, the audit plugin sudo loads with the option user=<forUser>,
+//! quoin_audit, the audit plugin sudo loads with the option user=<forUser>,
 //! and `remote` when the gate lists remote keys.
 
 const std = @import("std");
@@ -11,7 +11,7 @@ const agent = @import("agent");
 const ids = @import("ids");
 const config = @import("config");
 
-const gate_not_running = "frisket-sudo: gate not running (systemctl status frisket-sudo.socket); sudo in a terminal is not gated";
+const gate_not_running = "quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated";
 
 var say_fn: c.sudo_printf_t = null;
 var gated_user: ?[*:0]const u8 = null;
@@ -29,7 +29,7 @@ var agent_buf: [agent.max_frame]u8 = undefined;
 var signature_request: [wire.max_signature_request]u8 = undefined;
 var user_groups: [ids.max_groups]u32 = undefined;
 
-pub export var frisket_audit: c.struct_audit_plugin = .{
+pub export var quoin_audit: c.struct_audit_plugin = .{
     .type = c.SUDO_AUDIT_PLUGIN,
     .version = abi.api_version,
     .open = open,
@@ -253,7 +253,7 @@ fn logIds(when: []const u8) void {
     var gid: [3]u32 = undefined;
     if (!ids.Libc.getresuid(&uid) or !ids.Libc.getresgid(&gid)) return;
     const groups = ids.Libc.getgroups(&log_groups) orelse return;
-    const line = std.fmt.bufPrintZ(&log_line, "frisket-sudo ids {s}: uid {any} gid {any} groups {any}", .{ when, uid, gid, groups }) catch return;
+    const line = std.fmt.bufPrintZ(&log_line, "quoin-sudo ids {s}: uid {any} gid {any} groups {any}", .{ when, uid, gid, groups }) catch return;
     say(c.SUDO_CONV_ERROR_MSG, line);
 }
 
@@ -310,7 +310,7 @@ fn converse(n: c_int, msgs: [*c][*c]const c.struct_pam_message, resp: [*c][*c]c.
 fn verify(user: [*:0]const u8, password: [*:0]const u8) bool {
     const conv: c.struct_pam_conv = .{ .conv = converse, .appdata_ptr = @constCast(password) };
     var h: ?*c.pam_handle_t = null;
-    var rc = c.pam_start("frisket-sudo", user, &conv, &h);
+    var rc = c.pam_start("quoin-sudo", user, &conv, &h);
     if (rc == c.PAM_SUCCESS) rc = c.pam_authenticate(h, c.PAM_SILENT);
     if (rc == c.PAM_SUCCESS) rc = c.pam_acct_mgmt(h, c.PAM_SILENT);
     if (h != null) _ = c.pam_end(h, rc);

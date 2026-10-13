@@ -1,4 +1,4 @@
-//! lint [--skip DIR]... PATH...: flong's fdlint with the rules frisket-sudo
+//! lint [--skip DIR]... PATH...: flong's fdlint with the rules quoin-sudo
 //! takes, over Zig's tokens.
 
 const std = @import("std");
@@ -15,7 +15,7 @@ const Rule = enum {
     fn why(r: Rule) []const u8 {
         return switch (r) {
             .@"extern" => "C headers and symbols belong in abi.zig",
-            .@"export" => "the plugin's one export is frisket_audit, in frisket_sudo.zig",
+            .@"export" => "the plugin's one export is quoin_audit, in quoin_sudo.zig",
             .@"raw-number" => "a descriptor's number never leaves fd.zig",
             .@"handle-guts" => "a handle's fields are fd.zig's",
             .@"catch-unreachable" => "say why it cannot happen: `// proven: <why>` on the line",
@@ -28,7 +28,7 @@ fn applies(rule: Rule, name: []const u8) bool {
     const base = std.fs.path.basename(name);
     return switch (rule) {
         .@"extern" => !std.mem.eql(u8, base, "abi.zig"),
-        .@"export" => !std.mem.eql(u8, base, "frisket_sudo.zig") and !std.mem.eql(u8, base, "planted_type.zig"),
+        .@"export" => !std.mem.eql(u8, base, "quoin_sudo.zig") and !std.mem.eql(u8, base, "planted_type.zig"),
         .@"raw-number", .@"handle-guts" => !std.mem.eql(u8, base, "fd.zig") and !std.mem.endsWith(u8, base, "_test.zig"),
         .@"catch-unreachable" => true,
         .alloc => !std.mem.endsWith(u8, base, "_test.zig"),

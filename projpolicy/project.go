@@ -14,7 +14,7 @@ import (
 
 // NamespacePrefix starts every project policy's SSHSIG namespace. The
 // signer refuses a raw sign in any namespace that starts with it.
-const NamespacePrefix = "frisket-policy"
+const NamespacePrefix = "quoin-policy"
 
 // SigSuffix names a policy file's signature beside it: chase.json.sig.
 const SigSuffix = ".sig"
@@ -23,8 +23,8 @@ const SigSuffix = ".sig"
 const maxFile = 1 << 20
 
 // Namespace is the SSHSIG namespace a policy at root is signed in:
-// frisket-policy:~/Projects/foo for a root under home, frisket-policy:~ for
-// home itself, else frisket-policy: and the cleaned absolute path.
+// quoin-policy:~/Projects/foo for a root under home, quoin-policy:~ for
+// home itself, else quoin-policy: and the cleaned absolute path.
 func Namespace(root, home string) (string, error) {
 	r, err := RootName(root, home)
 	if err != nil {

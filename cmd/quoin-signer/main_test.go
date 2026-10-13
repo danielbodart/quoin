@@ -42,7 +42,7 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 		"forUser": "dan", "terminal": "ask",
 		"sshsig": {"git": "allow", "file": "ask"},
 		"ssh": {"hosts": {"github.com": "allow", "gitlab.com": "ask", "*.example": "allow", "**.bodar.com": "ask"}},
-		"policy": {"courier": "/run/frisket-policy/sock", "allowedSigners": "/etc/frisket/allowed_signers", "fileName": "chase.json"},
+		"policy": {"courier": "/run/quoin-courier/sock", "allowedSigners": "/etc/quoin/allowed_signers", "fileName": "chase.json"},
 		"loginSigners": ["proxy.service"], "policySigners": ["proxy.service", "helper.service"]
 	}`)
 	c, err := loadConfig(path)
@@ -54,7 +54,7 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 		SSHSIG: map[string]agentsrv.Rule{"git": agentsrv.Allow, "file": agentsrv.Ask},
 		SSH: sshConfig{Hosts: map[string]agentsrv.Rule{"github.com": agentsrv.Allow, "gitlab.com": agentsrv.Ask,
 			"*.example": agentsrv.Allow, "**.bodar.com": agentsrv.Ask}},
-		Policy:       &policyConfig{Courier: "/run/frisket-policy/sock", AllowedSigners: "/etc/frisket/allowed_signers", FileName: "chase.json"},
+		Policy:       &policyConfig{Courier: "/run/quoin-courier/sock", AllowedSigners: "/etc/quoin/allowed_signers", FileName: "chase.json"},
 		LoginSigners: []string{"proxy.service"}, PolicySigners: []string{"proxy.service", "helper.service"},
 	}
 	if !reflect.DeepEqual(c, want) {
@@ -72,8 +72,8 @@ func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
 		`{"forUser": "dan", "terminal": "refuse"}`,
 		`{"forUser": "dan", "terminal": "allow", "sshsig": {"git": "yes"}}`,
 		`{"forUser": "dan", "terminal": "allow", "sshsig": {"": "allow"}}`,
-		`{"forUser": "dan", "terminal": "allow", "sshsig": {"frisket-policy:~/x": "allow"}}`,
-		`{"forUser": "dan", "terminal": "allow", "sshsig": {"frisket-policy": "ask"}}`,
+		`{"forUser": "dan", "terminal": "allow", "sshsig": {"quoin-policy:~/x": "allow"}}`,
+		`{"forUser": "dan", "terminal": "allow", "sshsig": {"quoin-policy": "ask"}}`,
 		`{"forUser": "dan", "terminal": "allow", "ssh": {"hosts": {"github.com": "refuse"}}}`,
 		`{"forUser": "dan", "terminal": "allow", "ssh": {"hosts": {"github.com,evil": "allow"}}}`,
 		`{"forUser": "dan", "terminal": "allow", "ssh": {"hosts": {"": "allow"}}}`,

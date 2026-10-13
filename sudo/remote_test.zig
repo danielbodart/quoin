@@ -10,8 +10,8 @@ const agent = @import("agent");
 const fd = @import("fd");
 const testing = std.testing;
 
-const gate_path = "frisket-sudo-test-remote-gate.sock";
-const agent_name = "frisket-sudo-test-agent.sock";
+const gate_path = "quoin-sudo-test-remote-gate.sock";
+const agent_name = "quoin-sudo-test-agent.sock";
 
 // ---- sudo's side ----
 
@@ -88,18 +88,18 @@ fn open(user_info: [*c]const [*c]u8, options: [*c]const [*c]u8, envp: [*c]const 
     var errstr: [*c]const u8 = null;
     const none = [_:null]?[*:0]const u8{};
     const argv = [_:null]?[*:0]const u8{ "sudo", "id" };
-    return plugin.frisket_audit.open.?(c.SUDO_API_VERSION_MAJOR << 16, null, printf, arr(&none), user_info, 1, arr(&argv), envp, options, &errstr);
+    return plugin.quoin_audit.open.?(c.SUDO_API_VERSION_MAJOR << 16, null, printf, arr(&none), user_info, 1, arr(&argv), envp, options, &errstr);
 }
 
 fn accept(errstr: *[*c]const u8) c_int {
     const info = [_:null]?[*:0]const u8{"command=/run/current-system/sw/bin/id"};
     const argv = [_:null]?[*:0]const u8{"id"};
     const envp = [_:null]?[*:0]const u8{"PATH=/run/current-system/sw/bin"};
-    return plugin.frisket_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, arr(&info), arr(&argv), arr(&envp), errstr);
+    return plugin.quoin_audit.accept.?("sudoers", c.SUDO_POLICY_PLUGIN, arr(&info), arr(&argv), arr(&envp), errstr);
 }
 
 fn close() void {
-    plugin.frisket_audit.close.?(0, 0);
+    plugin.quoin_audit.close.?(0, 0);
 }
 
 // ---- the gate's and the agent's sides ----
@@ -207,7 +207,7 @@ const Wire = struct {
     }
 };
 
-const message = "\x00\x00\x00\x0ffrisket-sudo-v1 and the rest";
+const message = "\x00\x00\x00\x0dquoin-sudo-v1 and the rest";
 
 /// The gate's 'M' with `keys`.
 fn mReply(w: *Wire, keys: []const []const u8) []const u8 {
@@ -355,14 +355,14 @@ test "an agent that refuses, fails, hangs up or has no listed key, or no agent a
     };
     for (cases) |cs| {
         var mw: Wire = .{};
-        const r = try run(&.{ "Y\x00\x00", mReply(&mw, &.{ "key-b", "key-c" }), "N\x00\x0dfrisket-sudo." }, cs.agent, null);
+        const r = try run(&.{ "Y\x00\x00", mReply(&mw, &.{ "key-b", "key-c" }), "N\x00\x0bquoin-sudo." }, cs.agent, null);
         try testing.expectEqual(@as(c_int, 0), r.rc);
         try testing.expectEqualSlices(u8, "CAS", r.gate.kinds[0..3]);
         var want: Wire = .{};
         want.bytes("f");
         want.string(cs.why);
         try testing.expectEqualSlices(u8, want.out(), r.gate.body(2));
-        try testing.expectEqualStrings("frisket-sudo.", saidLine(0));
+        try testing.expectEqualStrings("quoin-sudo.", saidLine(0));
     }
 }
 

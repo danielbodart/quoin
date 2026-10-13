@@ -32,8 +32,8 @@ type swtpm struct {
 func startSwtpm(t *testing.T) *swtpm {
 	t.Helper()
 	if _, err := exec.LookPath("swtpm"); err != nil {
-		if os.Getenv("FRISKET_REQUIRE_SWTPM") != "" {
-			t.Fatalf("FRISKET_REQUIRE_SWTPM is set and there is no swtpm: %v", err)
+		if os.Getenv("QUOIN_REQUIRE_SWTPM") != "" {
+			t.Fatalf("QUOIN_REQUIRE_SWTPM is set and there is no swtpm: %v", err)
 		}
 		t.Skipf("no swtpm: %v", err)
 	}

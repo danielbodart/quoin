@@ -10,7 +10,7 @@
   "Cmdline": [
    "bash",
    "-c",
-   "set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libfrisket_sudo.so /usr/local/libexec/sudo/frisket_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\""
+   "set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libquoin_sudo.so /usr/local/libexec/sudo/quoin_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\""
   ]
  },
  {
@@ -24,7 +24,7 @@
   "Cmdline": [
    "script",
    "-qefc",
-   "set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libfrisket_sudo.so /usr/local/libexec/sudo/frisket_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\"",
+   "set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libquoin_sudo.so /usr/local/libexec/sudo/quoin_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\"",
    "/dev/null"
   ]
  },
@@ -41,7 +41,7 @@
    "1800",
    "script",
    "-qefc",
-   "set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libfrisket_sudo.so /usr/local/libexec/sudo/frisket_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\"",
+   "set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libquoin_sudo.so /usr/local/libexec/sudo/quoin_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\"",
    "/dev/null"
   ]
  },
@@ -56,7 +56,7 @@
   "Cmdline": [
    "/run/current-system/sw/bin/bash",
    "-c",
-   "source /home/dan/.claude/shell-snapshots/snapshot-bash-1791791682546-ubhwiz.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'cd /home/dan/Projects/frisket/sudo && timeout 1800 script -qefc '\"'\"'set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libfrisket_sudo.so /usr/local/libexec/sudo/frisket_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\"'\"'\"' /dev/null 2>&1 | tail -60' < /dev/null && pwd -P >| /tmp/claude-28f4-cwd"
+   "source /home/dan/.claude/shell-snapshots/snapshot-bash-1791791682546-ubhwiz.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'cd /home/dan/Projects/quoin/sudo && timeout 1800 script -qefc '\"'\"'set -euo pipefail; zig build -Doptimize=ReleaseSafe 2>&1 | tail -20 || true; sudo install -m 0644 zig-out/lib/libquoin_sudo.so /usr/local/libexec/sudo/quoin_sudo.so && echo \"installed $(sha256sum /etc/hostname | cut -d\" \" -f1)\"'\"'\"' /dev/null 2>&1 | tail -60' < /dev/null && pwd -P >| /tmp/claude-28f4-cwd"
   ]
  },
  {

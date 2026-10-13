@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const roleClient = "frisket-test-peer-client"
+const roleClient = "quoin-test-peer-client"
 
 func TestMain(m *testing.M) {
 	if len(os.Args) > 3 && os.Args[1] == roleClient {
@@ -98,11 +98,11 @@ func TestAPeerProcIsItsPidAndParentWithTheirStarttimes(t *testing.T) {
 	}
 }
 
-func TestOnlyFrisketsMainProcessIsTrusted(t *testing.T) {
+func TestOnlyAUnitsMainProcessIsTrusted(t *testing.T) {
 	cgroupRoot = t.TempDir()
 	t.Cleanup(func() { cgroupRoot = "/sys/fs/cgroup" })
-	unit := filepath.Join(cgroupRoot, "system.slice", "frisket.service")
-	other := filepath.Join(cgroupRoot, "system.slice", "frisket-asker.service")
+	unit := filepath.Join(cgroupRoot, "system.slice", "proxy.service")
+	other := filepath.Join(cgroupRoot, "system.slice", "proxy-asker.service")
 	for _, d := range []string{unit, other} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -116,13 +116,13 @@ func TestOnlyFrisketsMainProcessIsTrusted(t *testing.T) {
 		return st.Ino
 	}
 	main := func() *Requester {
-		return &Requester{Chain: []Link{{Pid: 700, PPid: 1, Comm: "frisket", UID: 1000}}, PeerUID: 1000, PPid: 1, CgroupID: ino(unit)}
+		return &Requester{Chain: []Link{{Pid: 700, PPid: 1, Comm: "proxy", UID: 1000}}, PeerUID: 1000, PPid: 1, CgroupID: ino(unit)}
 	}
-	if !main().IsMainOf("frisket.service", 1000) {
-		t.Fatal("frisket's main process is not trusted")
+	if !main().IsMainOf("proxy.service", 1000) {
+		t.Fatal("the unit's main process is not trusted")
 	}
 	for name, change := range map[string]func(*Requester){
-		"another comm":   func(r *Requester) { r.Chain[0].Comm = "frisket-asker" },
+		"another comm":   func(r *Requester) { r.Chain[0].Comm = "proxy-asker" },
 		"a ppid not 1":   func(r *Requester) { r.PPid = 700 },
 		"another cgroup": func(r *Requester) { r.CgroupID = ino(other) },
 		"no cgroup":      func(r *Requester) { r.CgroupID = 0 },
@@ -131,7 +131,7 @@ func TestOnlyFrisketsMainProcessIsTrusted(t *testing.T) {
 	} {
 		r := main()
 		change(r)
-		if r.IsMainOf("frisket.service", 1000) {
+		if r.IsMainOf("proxy.service", 1000) {
 			t.Errorf("%s is trusted", name)
 		}
 	}
@@ -145,7 +145,7 @@ func TestOnlyFrisketsMainProcessIsTrusted(t *testing.T) {
 	if err := os.Rename(unit+".new", unit); err != nil {
 		t.Fatal(err)
 	}
-	if r.IsMainOf("frisket.service", 1000) {
+	if r.IsMainOf("proxy.service", 1000) {
 		t.Error("a process from the unit's previous cgroup is trusted")
 	}
 }

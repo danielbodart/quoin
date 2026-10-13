@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	magic       = "FSUD"
+	magic       = "QSUD"
 	version     = 2
 	maxRequest  = 1 << 20
 	maxLinks    = 16
@@ -60,7 +60,7 @@ func readRequest(r io.Reader) (*request, error) {
 		return nil, err
 	}
 	if string(h[:4]) != magic {
-		return nil, errors.New("not a frisket-sudo request")
+		return nil, errors.New("not a quoin-sudo request")
 	}
 	if h[4] != version {
 		return nil, fmt.Errorf("version %d", h[4])

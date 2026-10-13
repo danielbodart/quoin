@@ -244,7 +244,7 @@ func TestAnUnlistedKeyOrABadSignatureIsNo(t *testing.T) {
 	c.send(approval(remoteCmd("foo")))
 	r := c.readMessage()
 	c.send(signed(t, agentKey(t), r.raw))
-	c.want(replyNo, "frisket-sudo: not a listed key")
+	c.want(replyNo, "quoin-sudo: not a listed key")
 
 	c = h.remoteSudo(501)
 	c.send(approval(remoteCmd("foo")))
@@ -266,13 +266,13 @@ func TestAnFRecordIsNoWithItsReason(t *testing.T) {
 	c.send(approval(remoteCmd("foo")))
 	c.readMessage()
 	c.send(failed("no listed key in the forwarded agent"))
-	c.want(replyNo, "frisket-sudo: no listed key in the forwarded agent")
+	c.want(replyNo, "quoin-sudo: no listed key in the forwarded agent")
 
 	c = h.remoteSudo(501)
 	c.send(approval(remoteCmd("foo")))
 	c.readMessage()
 	c.send(failed(strings.Repeat("x", maxMessage)))
-	if k, m := c.read(); k != replyNo || len(m) != maxMessage || !strings.HasPrefix(m, "frisket-sudo: xxx") {
+	if k, m := c.read(); k != replyNo || len(m) != maxMessage || !strings.HasPrefix(m, "quoin-sudo: xxx") {
 		t.Errorf("got %q %d bytes", k, len(m))
 	}
 }
@@ -287,7 +287,7 @@ func TestTheNonceIsSpentOnceAndDiesWithTheCheckIn(t *testing.T) {
 	c.send(approval(remoteCmd("foo")))
 	r := c.readMessage()
 	c.send(failed("agent refused"))
-	c.want(replyNo, "frisket-sudo: agent refused")
+	c.want(replyNo, "quoin-sudo: agent refused")
 	c.send(signed(t, k, r.raw))
 	c.want(replyNo, "")
 

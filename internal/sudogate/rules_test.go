@@ -155,7 +155,7 @@ func TestARuleNeverDecidesDangerAWarningOrWhatItCannotRead(t *testing.T) {
 		level string
 	}{
 		"a guard unit":          {run("systemctl", "stop", "sshd.service"), "danger"},
-		"a guard unit's status": {run("systemctl", "status", "frisket.service"), "danger"},
+		"a guard unit's status": {run("systemctl", "status", "quoin-sudo.service"), "danger"},
 		"outside the dirs":      {sudoCmd{links: claude(100), program: "/home/dan/bin/x", argv: []string{"x"}, info: []string{"runas_user=root"}}, "danger"},
 		"unreadable sh -c":      {run("sh", "-c", `"$(printf x)"`), "danger"},
 		"a readable sh -c":      {run("sh", "-c", "id -u"), "normal"},
@@ -227,7 +227,7 @@ func newProject(t *testing.T) *fakeProject {
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := `dan namespaces="frisket-policy:*" ` + string(ssh.MarshalAuthorizedKey(k))
+	line := `dan namespaces="quoin-policy:*" ` + string(ssh.MarshalAuthorizedKey(k))
 	return &fakeProject{key: priv, signers: []byte(line)}
 }
 
@@ -375,7 +375,7 @@ func TestAFileThatDoesNotVerifyIsIgnoredWithOneLine(t *testing.T) {
 	section := sudoSection(map[string]any{bin + "journalctl **": rule("refuse"), bin + "uptime": rule("allow")})
 	for name, set := range map[string]func(*testing.T, *fakeProject){
 		"unsigned":          func(t *testing.T, p *fakeProject) { p.file(t, home+"/proj", section, false, "") },
-		"another namespace": func(t *testing.T, p *fakeProject) { p.file(t, home+"/proj", section, true, "frisket-policy:~/other") },
+		"another namespace": func(t *testing.T, p *fakeProject) { p.file(t, home+"/proj", section, true, "quoin-policy:~/other") },
 		"another signer": func(t *testing.T, p *fakeProject) {
 			p.file(t, home+"/proj", section, true, "")
 			p.signers = []byte(nil)

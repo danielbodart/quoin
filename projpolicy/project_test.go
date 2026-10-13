@@ -15,15 +15,15 @@ import (
 
 func TestTheNamespaceNamesTheRootFromHome(t *testing.T) {
 	for _, c := range []struct{ root, home, want string }{
-		{"/home/dan/Projects/foo", "/home/dan", "frisket-policy:~/Projects/foo"},
-		{"/home/dan/Projects/foo/", "/home/dan/", "frisket-policy:~/Projects/foo"},
-		{"/home/dan/Projects/../x", "/home/dan", "frisket-policy:~/x"},
-		{"/home/dan", "/home/dan", "frisket-policy:~"},
-		{"/home/danny/x", "/home/dan", "frisket-policy:/home/danny/x"},
-		{"/srv/x/", "/home/dan", "frisket-policy:/srv/x"},
-		{"/srv/x", "", "frisket-policy:/srv/x"},
-		{"/", "/", "frisket-policy:~"},
-		{"/a b/c", "/", "frisket-policy:~/a b/c"},
+		{"/home/dan/Projects/foo", "/home/dan", "quoin-policy:~/Projects/foo"},
+		{"/home/dan/Projects/foo/", "/home/dan/", "quoin-policy:~/Projects/foo"},
+		{"/home/dan/Projects/../x", "/home/dan", "quoin-policy:~/x"},
+		{"/home/dan", "/home/dan", "quoin-policy:~"},
+		{"/home/danny/x", "/home/dan", "quoin-policy:/home/danny/x"},
+		{"/srv/x/", "/home/dan", "quoin-policy:/srv/x"},
+		{"/srv/x", "", "quoin-policy:/srv/x"},
+		{"/", "/", "quoin-policy:~"},
+		{"/a b/c", "/", "quoin-policy:~/a b/c"},
 	} {
 		got, err := Namespace(c.root, c.home)
 		if err != nil || got != c.want {
@@ -98,7 +98,7 @@ func TestLoadSaysWhetherTheSignatureVerifiesAndWhyNot(t *testing.T) {
 	}
 	s := goSigners(t)["ecdsa"]
 	pub := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(s.PublicKey())))
-	all := signers(t, `dan namespaces="frisket-policy:*" `+pub)
+	all := signers(t, `dan namespaces="quoin-policy:*" `+pub)
 	path := filepath.Join(root, "chase.json")
 	write(t, path, message)
 
@@ -106,13 +106,13 @@ func TestLoadSaysWhetherTheSignatureVerifiesAndWhyNot(t *testing.T) {
 	if err != nil || p.Verified || p.Why != "no chase.json.sig" || p.Sig != nil {
 		t.Fatalf("unsigned: %+v, %v", p, err)
 	}
-	sig, err := Sign(rand.Reader, s, "frisket-policy:~/Projects/foo", []byte(message))
+	sig, err := Sign(rand.Reader, s, "quoin-policy:~/Projects/foo", []byte(message))
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(t, path+".sig", string(sig))
 	p, err = Load(root, home, "chase.json", all)
-	if err != nil || !p.Verified || p.Namespace != "frisket-policy:~/Projects/foo" ||
+	if err != nil || !p.Verified || p.Namespace != "quoin-policy:~/Projects/foo" ||
 		!reflect.DeepEqual(p.Principals, []string{"dan"}) || p.Digest != Digest([]byte(message)) {
 		t.Fatalf("signed: %+v, %v", p, err)
 	}
@@ -125,7 +125,7 @@ func TestLoadSaysWhetherTheSignatureVerifiesAndWhyNot(t *testing.T) {
 	write(t, filepath.Join(other, "chase.json"), message)
 	write(t, filepath.Join(other, "chase.json.sig"), string(sig))
 	p, err = Load(other, home, "chase.json", all)
-	if err != nil || p.Verified || !strings.Contains(p.Why, "not \"frisket-policy:~/Projects/bar\"") {
+	if err != nil || p.Verified || !strings.Contains(p.Why, "not \"quoin-policy:~/Projects/bar\"") {
 		t.Fatalf("moved: %+v, %v", p, err)
 	}
 

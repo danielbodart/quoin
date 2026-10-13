@@ -71,14 +71,14 @@ func TestACommandThatFitsIsOneLineAsBefore(t *testing.T) {
 
 func TestALongShellCommandPutsItsScriptsSegmentsOnLines(t *testing.T) {
 	script := "source /home/dan/.claude/shell-snapshots/snapshot-bash-1760.sh 2>/dev/null || true && " +
-		"eval 'cd /home/dan/Projects/frisket && go test ./...' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"
+		"eval 'cd /home/dan/Projects/quoin && go test ./...' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"
 	got := Command([]string{"/bin/bash", "-c", "-l", script}, 72)
 	want := []string{
 		"/bin/bash -c -l",
 		"    source /home/dan/.claude/shell-snapshots/snapshot-bash-1760.sh \\",
 		"        2>/dev/null",
 		"    || true",
-		"    && eval 'cd /home/dan/Projects/frisket && go test ./...' < /dev/null",
+		"    && eval 'cd /home/dan/Projects/quoin && go test ./...' < /dev/null",
 		"    && pwd -P >| /tmp/claude-ab12-cwd",
 	}
 	if !slices.Equal(got, want) {
@@ -151,9 +151,9 @@ func TestAWrappersCommandIsLaidOutAsItsOwn(t *testing.T) {
 			t.Errorf("%q: got %d", c.argv, got)
 		}
 	}
-	script := "cd /home/dan/Projects/frisket && go test ./internal/... 2>&1 | tail -40"
+	script := "cd /home/dan/Projects/quoin && go test ./internal/... 2>&1 | tail -40"
 	got := Command([]string{"timeout", "600", "bash", "-c", script}, 40)
-	want := []string{"timeout 600 bash -c", "    cd /home/dan/Projects/frisket", "    && go test ./internal/... 2>&1", "    | tail -40"}
+	want := []string{"timeout 600 bash -c", "    cd /home/dan/Projects/quoin", "    && go test ./internal/... 2>&1", "    | tail -40"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %q", got)
 	}

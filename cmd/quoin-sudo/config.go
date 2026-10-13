@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const defaultConfig = "/etc/frisket-sudo/config.json"
+const defaultConfig = "/etc/quoin/sudo.json"
 
 // config is the gate's settings file, its keys named as the NixOS module's
 // options are.
@@ -106,7 +106,7 @@ func (c *config) validate() error {
 // schema is the config file's JSON Schema.
 const schema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "frisket-sudo config",
+  "title": "quoin-sudo config",
   "type": "object",
   "additionalProperties": false,
   "required": ["forUser"],

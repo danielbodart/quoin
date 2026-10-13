@@ -1,5 +1,5 @@
 // Package sudomsg is the message a remote sudo asks the forwarded agent to
-// sign: built by frisket-sudo's gate and read by frisket-signer.
+// sign: built by quoin-sudo's gate and read by quoin-signer.
 package sudomsg
 
 import (
@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	Magic     = "frisket-sudo-v1"
+	Magic     = "quoin-sudo-v1"
 	NonceSize = 32
 	// MaxSize is OpenSSH's agent message limit.
 	MaxSize = 256 << 10
@@ -32,7 +32,7 @@ type Message struct {
 }
 
 var (
-	errMalformed = errors.New("not a well-formed frisket-sudo message")
+	errMalformed = errors.New("not a well-formed quoin-sudo message")
 	ErrTooLong   = fmt.Errorf("over the agent's limit of %d bytes", MaxSize)
 )
 

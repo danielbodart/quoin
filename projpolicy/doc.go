@@ -5,9 +5,11 @@
 // binds a signature to the project's directory, and finding the file above
 // a working directory.
 //
-// It is public so that chase, which reads, formats, merges and signs the
-// same file, uses these functions rather than a copy that could drift: a
-// policy chase signs is one frisket verifies. docs/policy.md says what each
+// It is public so that every program that reads, formats, merges, signs or
+// verifies the same file -- the launcher that writes it, the signer and the
+// sudo gate that verify it, a proxy that writes what a person answered
+// Always -- uses these functions rather than a copy that could drift: a
+// policy one signs is one the others verify. docs/policy.md says what each
 // means.
 //
 // Everything here is a pure function of its arguments and the files it is

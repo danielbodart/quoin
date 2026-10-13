@@ -31,7 +31,7 @@ func TestServeRefusesToStartWithoutTheCourierFd(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("as root, serve refuses before the socket")
 	}
-	path := writeConfig(t, `{"fileName": "chase.json", "allowedSigners": "/etc/frisket/allowed_signers", "peers": {"x.service": "`+me.Username+`"}}`)
+	path := writeConfig(t, `{"fileName": "chase.json", "allowedSigners": "/etc/quoin/allowed_signers", "peers": {"x.service": "`+me.Username+`"}}`)
 	err = runServe([]string{"-config", path})
 	if err == nil || !strings.Contains(err.Error(), "no socket named courier") {
 		t.Errorf("got %v", err)
@@ -40,16 +40,16 @@ func TestServeRefusesToStartWithoutTheCourierFd(t *testing.T) {
 
 func TestAConfigReadsEverySetting(t *testing.T) {
 	path := writeConfig(t, `{
-		"fileName": "chase.json", "allowedSigners": "/etc/frisket/allowed_signers",
-		"peers": {"frisket-signer.service": "ssh-signer", "frisket-sudo.service": "sudo-gate"}
+		"fileName": "chase.json", "allowedSigners": "/etc/quoin/allowed_signers",
+		"peers": {"quoin-signer.service": "ssh-signer", "quoin-sudo.service": "sudo-gate"}
 	}`)
 	c, err := loadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := &config{
-		FileName: "chase.json", AllowedSigners: "/etc/frisket/allowed_signers",
-		Peers: map[string]string{"frisket-signer.service": "ssh-signer", "frisket-sudo.service": "sudo-gate"},
+		FileName: "chase.json", AllowedSigners: "/etc/quoin/allowed_signers",
+		Peers: map[string]string{"quoin-signer.service": "ssh-signer", "quoin-sudo.service": "sudo-gate"},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Errorf("got %+v", c)
@@ -60,7 +60,7 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 }
 
 func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
-	const s = `"allowedSigners": "/etc/frisket/allowed_signers"`
+	const s = `"allowedSigners": "/etc/quoin/allowed_signers"`
 	for _, bad := range []string{
 		`{` + s + `}`,
 		`{"fileName": "", ` + s + `}`,
@@ -70,9 +70,9 @@ func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
 		`{"fileName": "chase.json"}`,
 		`{"fileName": "chase.json", "allowedSigners": "etc/allowed_signers"}`,
 		`{"fileName": "chase.json", "allowedSigners": "/etc//allowed_signers"}`,
-		`{"fileName": "chase.json", ` + s + `, "peers": {"frisket-signer": "ssh-signer"}}`,
+		`{"fileName": "chase.json", ` + s + `, "peers": {"quoin-signer": "ssh-signer"}}`,
 		`{"fileName": "chase.json", ` + s + `, "peers": {"a/b.service": "ssh-signer"}}`,
-		`{"fileName": "chase.json", ` + s + `, "peers": {"frisket-signer.service": ""}}`,
+		`{"fileName": "chase.json", ` + s + `, "peers": {"quoin-signer.service": ""}}`,
 		`{"fileName": "chase.json", ` + s + `, "peer": {}}`,
 		`{"fileName": "chase.json", ` + s + `} {}`,
 	} {

@@ -17,7 +17,7 @@ var envAllowed = map[string]bool{
 	"SUDO_COMMAND": true, "SUDO_HOME": true,
 }
 
-const unreadable = "a shell command frisket cannot read"
+const unreadable = "a shell command the gate cannot read"
 
 // rootOwned is whether program is absolute, clean and directly in one of the
 // root-owned directories.

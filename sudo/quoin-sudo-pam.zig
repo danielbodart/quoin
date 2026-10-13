@@ -1,4 +1,4 @@
-//! frisket-sudo-pam USER: pam_exec's helper in sudo's auth stack,
+//! quoin-sudo-pam USER: pam_exec's helper in sudo's auth stack,
 //! `sufficient`, before pam_unix. Exits 0, so sudo skips the password, only
 //! when the gate says its parent sudo checked in.
 

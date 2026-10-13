@@ -18,13 +18,13 @@ import (
 )
 
 // sshKeygen is stock ssh-keygen, the oracle these tests hold the package
-// to. The flake's check sets FRISKET_REQUIRE_SSH_KEYGEN, so there a missing
+// to. The flake's check sets QUOIN_REQUIRE_SSH_KEYGEN, so there a missing
 // one fails rather than skips.
 func sshKeygen(t *testing.T) string {
 	t.Helper()
 	p, err := exec.LookPath("ssh-keygen")
 	if err != nil {
-		if os.Getenv("FRISKET_REQUIRE_SSH_KEYGEN") != "" {
+		if os.Getenv("QUOIN_REQUIRE_SSH_KEYGEN") != "" {
 			t.Fatal("ssh-keygen is required: ", err)
 		}
 		t.Skip("no ssh-keygen: ", err)
@@ -76,7 +76,7 @@ func signers(t *testing.T, body string) *AllowedSigners {
 	return s
 }
 
-const ns = "frisket-policy:~/Projects/foo"
+const ns = "quoin-policy:~/Projects/foo"
 
 var message = "{\n  \"version\": 2\n}\n"
 
@@ -106,7 +106,7 @@ func TestStockSignaturesVerify(t *testing.T) {
 				if want := hash; want != "" && s.HashAlg != want {
 					t.Errorf("hash %s, want %s", s.HashAlg, want)
 				}
-				all := signers(t, `dan namespaces="frisket-policy:*" `+pub)
+				all := signers(t, `dan namespaces="quoin-policy:*" `+pub)
 				who, err := Verify([]byte(message), sig, ns, all, "dan", time.Now())
 				if err != nil || len(who) != 1 || who[0] != "dan" {
 					t.Fatalf("got %v, %v", who, err)
@@ -150,7 +150,7 @@ func TestSignaturesMadeHereVerifyWithStock(t *testing.T) {
 			msg := write(t, filepath.Join(dir, "chase.json"), message)
 			write(t, msg+".sig", string(sig))
 			pub := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(s.PublicKey())))
-			allowed := write(t, filepath.Join(dir, "allowed_signers"), `dan namespaces="frisket-policy:*" `+pub+"\n")
+			allowed := write(t, filepath.Join(dir, "allowed_signers"), `dan namespaces="quoin-policy:*" `+pub+"\n")
 			cmd := exec.Command(kg, "-Y", "verify", "-f", allowed, "-I", "dan", "-n", ns, "-s", msg+".sig")
 			cmd.Stdin = strings.NewReader(message)
 			if out, err := cmd.CombinedOutput(); err != nil {
@@ -171,7 +171,7 @@ func TestAllowedSignersAgreeWithStock(t *testing.T) {
 	_, other := stockKey(t, kg, "ed25519")
 	dir := t.TempDir()
 	msg := write(t, filepath.Join(dir, "chase.json"), message)
-	for _, n := range []string{ns, "git", "frisket-policy:/srv/x"} {
+	for _, n := range []string{ns, "git", "quoin-policy:/srv/x"} {
 		out, err := run(t, kg, "-Y", "sign", "-f", key, "-n", n, msg)
 		if err != nil {
 			t.Fatalf("%v\n%s", err, out)
@@ -186,11 +186,11 @@ func TestAllowedSignersAgreeWithStock(t *testing.T) {
 	lines := []string{
 		"dan " + pub,
 		"dan " + other,
-		`dan namespaces="frisket-policy:*" ` + pub,
+		`dan namespaces="quoin-policy:*" ` + pub,
 		`dan namespaces="git" ` + pub,
-		`dan NAMESPACES="frisket-policy:~/*" ` + pub,
-		`dan namespaces="frisket-*,!frisket-policy:/*" ` + pub,
-		`dan namespaces="git,frisket-policy:~/Projects/fo?" ` + pub,
+		`dan NAMESPACES="quoin-policy:~/*" ` + pub,
+		`dan namespaces="quoin-*,!quoin-policy:/*" ` + pub,
+		`dan namespaces="git,quoin-policy:~/Projects/fo?" ` + pub,
 		"dan,!eve " + pub,
 		"d?n " + pub,
 		"* " + pub,
@@ -200,7 +200,7 @@ func TestAllowedSignersAgreeWithStock(t *testing.T) {
 		`dan valid-before="20250101Z" ` + pub,
 		`dan valid-after="20250101",valid-before="20270101" ` + pub,
 		`dan valid-after="202601011200Z" ` + pub,
-		`dan namespaces="frisket-policy:*",valid-before="20260601" ` + pub,
+		`dan namespaces="quoin-policy:*",valid-before="20260601" ` + pub,
 	}
 	type when struct{ flag, ours string }
 	for i, line := range lines {
@@ -210,7 +210,7 @@ func TestAllowedSignersAgreeWithStock(t *testing.T) {
 			t.Fatalf("%s: %v", line, err)
 		}
 		for _, principal := range []string{"dan", "eve", "bob"} {
-			for _, n := range []string{ns, "git", "frisket-policy:/srv/x"} {
+			for _, n := range []string{ns, "git", "quoin-policy:/srv/x"} {
 				for _, at := range []string{"20240101", "20260101", "20260101130000", "20261231", "20310101"} {
 					sig, err := os.ReadFile(sigFor(n))
 					if err != nil {
@@ -268,7 +268,7 @@ func TestMatchPatternIsOpenSSHs(t *testing.T) {
 	}{
 		{"", "", true}, {"a", "", false}, {"", "*", true}, {"abc", "a*c", true},
 		{"abc", "a?c", true}, {"ac", "a?c", false}, {"a/b/c", "a*", true},
-		{"frisket-policy:~/x", "frisket-policy:*", true}, {"abcbc", "*bc", true},
+		{"quoin-policy:~/x", "quoin-policy:*", true}, {"abcbc", "*bc", true},
 		{"abcbd", "*bc", false}, {"aXbXc", "a*b*c", true}, {"ab", "a**b", true},
 		{"Dan", "dan", false}, {"abc", "*?", true}, {"", "?", false},
 	} {
@@ -281,7 +281,7 @@ func TestMatchPatternIsOpenSSHs(t *testing.T) {
 		want    int
 	}{
 		{"dan", "dan", 1}, {"dan", "bob,dan", 1}, {"dan", "!dan", -1}, {"dan", "*,!dan", -1},
-		{"dan", "!eve", 0}, {"dan", "!eve,d*", 1}, {"git", "frisket-*", 0}, {"dan", "", 0},
+		{"dan", "!eve", 0}, {"dan", "!eve,d*", 1}, {"git", "quoin-*", 0}, {"dan", "", 0},
 	} {
 		if got := MatchPatternList(c.s, c.list); got != c.want {
 			t.Errorf("MatchPatternList(%q, %q) = %d", c.s, c.list, got)

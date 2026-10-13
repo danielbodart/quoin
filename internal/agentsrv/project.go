@@ -432,7 +432,7 @@ func (c *conn) policySignErr(contents []byte) ([]byte, error) {
 	case p.Name != c.s.Policy.FileName:
 		return nil, refuse(fmt.Sprintf("%q is not the policy file, %s", p.Name, c.s.Policy.FileName))
 	case p.New == nil || !projpolicy.Canonical(p.New):
-		return nil, refuse("the new file is not canonical: run frisket policy fmt on it first")
+		return nil, refuse("the new file is not canonical: sorted keys, a two-space indent and a trailing newline")
 	case len(p.New) > wire.MaxDiff || len(p.Old) > wire.MaxDiff:
 		return nil, refuse("the file is too big to show")
 	}

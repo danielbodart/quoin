@@ -1,4 +1,4 @@
-//! frisket-sudo-check-plugin SO SYMBOL SUDO_VERSION: fails unless SYMBOL is
+//! quoin-sudo-check-plugin SO SYMBOL SUDO_VERSION: fails unless SYMBOL is
 //! an audit plugin of this API major built for SUDO_VERSION.
 
 const std = @import("std");
@@ -7,7 +7,7 @@ const config = @import("config");
 
 pub fn main() u8 {
     const args = std.os.argv;
-    if (args.len != 4) return fail("usage: frisket-sudo-check-plugin SO SYMBOL SUDO_VERSION", .{});
+    if (args.len != 4) return fail("usage: quoin-sudo-check-plugin SO SYMBOL SUDO_VERSION", .{});
     const so, const symbol, const version = .{ args[1], args[2], std.mem.span(args[3]) };
     const lib = std.c.dlopen(so, .{ .NOW = true }) orelse return fail("cannot load {s}: {s}", .{ so, std.c.dlerror() orelse "" });
     const sym = std.c.dlsym(lib, symbol) orelse return fail("{s}: no symbol {s}", .{ so, symbol });
@@ -24,7 +24,7 @@ pub fn main() u8 {
 fn fail(comptime fmt: []const u8, args: anytype) u8 {
     var buf: [1024]u8 = undefined;
     var w = std.fs.File.stderr().writer(&buf);
-    w.interface.print("frisket-sudo-check-plugin: " ++ fmt ++ "\n", args) catch return 1;
+    w.interface.print("quoin-sudo-check-plugin: " ++ fmt ++ "\n", args) catch return 1;
     w.interface.flush() catch return 1;
     return 1;
 }
