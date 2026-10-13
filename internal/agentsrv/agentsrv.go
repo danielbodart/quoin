@@ -21,11 +21,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/grant"
 	"github.com/danielbodart/quoin/internal/sudomsg"
 	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/policysign"
 	"github.com/danielbodart/quoin/projpolicy"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -216,7 +217,7 @@ func (c *conn) SignWithFlags(key ssh.PublicKey, data []byte, _ agent.SignatureFl
 
 func (c *conn) Extension(typ string, contents []byte) (_ []byte, err error) {
 	defer c.refusePanic(&err)
-	if typ == PolicySignExtension {
+	if typ == policysign.Extension {
 		return c.policySign(contents), nil
 	}
 	if typ != "session-bind@openssh.com" {

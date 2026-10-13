@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/hostpattern"
-	"github.com/danielbodart/quoin/internal/courier"
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/policysign"
 	"github.com/danielbodart/quoin/projpolicy"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -437,25 +438,22 @@ func TestAlwaysWhoseWriteConflictsStillSignsOnceAndSaysSo(t *testing.T) {
 	wait(t, done)
 }
 
-func policySign(t *testing.T, c *client, req PolicySignRequest) PolicySignResponse {
+func policySign(t *testing.T, c *client, req policysign.Request) policysign.Response {
 	t.Helper()
 	b, _ := json.Marshal(req)
-	out, err := c.Extension(PolicySignExtension, b)
+	out, err := c.Extension(policysign.Extension, b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) == 0 || out[0] != agentSuccess {
-		t.Fatalf("reply %q", out)
-	}
-	var r PolicySignResponse
-	if err := json.Unmarshal(out[1:], &r); err != nil {
+	r, err := policysign.ParseReply(out)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return r
 }
 
-func policySignAsync(t *testing.T, c *client, req PolicySignRequest) <-chan PolicySignResponse {
-	done := make(chan PolicySignResponse, 1)
+func policySignAsync(t *testing.T, c *client, req policysign.Request) <-chan policysign.Response {
+	done := make(chan policysign.Response, 1)
 	go func() { done <- policySign(t, c, req) }()
 	return done
 }
@@ -470,13 +468,13 @@ func TestPolicySignShowsTheDiffAndSignsOnAllow(t *testing.T) {
 
 	for _, c := range []struct {
 		name    string
-		req     PolicySignRequest
+		req     policysign.Request
 		showOld string
 		says    string
 	}{
-		{"a verified old", PolicySignRequest{Root: foo, Name: "chase.json", New: []byte(widened), Old: []byte(old), OldSig: oldSig}, old, ""},
-		{"unsigned", PolicySignRequest{Root: foo, Name: "chase.json", New: []byte(widened)}, "", "The old file was unsigned"},
-		{"an old that is not what was signed", PolicySignRequest{Root: foo, Name: "chase.json", New: []byte(widened), Old: []byte(widened), OldSig: oldSig}, "", "The old signature does not verify"},
+		{"a verified old", policysign.Request{Root: foo, Name: "chase.json", New: []byte(widened), Old: []byte(old), OldSig: oldSig}, old, ""},
+		{"unsigned", policysign.Request{Root: foo, Name: "chase.json", New: []byte(widened)}, "", "The old file was unsigned"},
+		{"an old that is not what was signed", policysign.Request{Root: foo, Name: "chase.json", New: []byte(widened), Old: []byte(widened), OldSig: oldSig}, "", "The old signature does not verify"},
 	} {
 		done := policySignAsync(t, h.dial(tab()), c.req)
 		a := h.next()
@@ -495,7 +493,7 @@ func TestPolicySignShowsTheDiffAndSignsOnAllow(t *testing.T) {
 		}
 	}
 
-	done := policySignAsync(t, h.dial(tab()), PolicySignRequest{Root: foo, Name: "chase.json", New: []byte(widened)})
+	done := policySignAsync(t, h.dial(tab()), policysign.Request{Root: foo, Name: "chase.json", New: []byte(widened)})
 	h.next().reply <- answered{}
 	if r := <-done; r.Sig != nil || r.Error != "refused" {
 		t.Errorf("refused: %+v", r)
@@ -514,8 +512,8 @@ func TestPolicySignRefusesWhatItMayNotSign(t *testing.T) {
 			return nil
 		}
 	})
-	good := PolicySignRequest{Root: foo, Name: "chase.json", New: []byte(project(`{}`))}
-	for name, req := range map[string]PolicySignRequest{
+	good := policysign.Request{Root: foo, Name: "chase.json", New: []byte(project(`{}`))}
+	for name, req := range map[string]policysign.Request{
 		"not canonical":   {Root: foo, Name: "chase.json", New: []byte(`{"version":2}`)},
 		"another name":    {Root: foo, Name: "other.json", New: good.New},
 		"a relative root": {Root: "Projects/foo", Name: "chase.json", New: good.New},
@@ -549,7 +547,7 @@ func TestPolicySignSignsFrisketsApprovedUnasked(t *testing.T) {
 	fc := &fakeCourier{}
 	h := newHarness(t, 1, withPolicy(fc))
 	ns := "frisket-policy:~/Projects/foo"
-	approved := PolicySignRequest{Root: foo, Name: "chase.json", New: []byte(project(`{"a.example": "allow"}`)), Approved: true}
+	approved := policysign.Request{Root: foo, Name: "chase.json", New: []byte(project(`{"a.example": "allow"}`)), Approved: true}
 	signers, _ := projpolicy.ReadAllowedSigners(h.s.Policy.AllowedSigners)
 
 	h.frisket.Store(true)
@@ -582,7 +580,7 @@ func TestPolicySignSignsFrisketsApprovedUnasked(t *testing.T) {
 func TestTheGitSigningSocketRefusesPolicySign(t *testing.T) {
 	g := &Git{Policy: "strict", UID: uid, Upstream: "/nonexistent", Log: slog.New(slog.DiscardHandler)}
 	c := &gitConn{g: g}
-	if _, err := c.Extension(PolicySignExtension, nil); !errors.Is(err, agent.ErrExtensionUnsupported) {
+	if _, err := c.Extension(policysign.Extension, nil); !errors.Is(err, agent.ErrExtensionUnsupported) {
 		t.Errorf("got %v", err)
 	}
 }

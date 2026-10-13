@@ -19,7 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/courier"
+	"github.com/danielbodart/quoin/internal/couriersrv"
 	"github.com/danielbodart/quoin/projpolicy"
 	"github.com/danielbodart/quoin/sdnotify"
 )
@@ -120,7 +121,7 @@ func runServe(argv []string) error {
 	if err != nil {
 		return err
 	}
-	s := &courier.Server{
+	s := &couriersrv.Server{
 		Name: cfg.FileName, Home: me.HomeDir, UID: os.Getuid(), Peers: peers, Log: log,
 		Signers: func() (*projpolicy.AllowedSigners, error) { return projpolicy.ReadAllowedSigners(cfg.AllowedSigners) },
 	}

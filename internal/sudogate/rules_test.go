@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/peer"
 	"github.com/danielbodart/quoin/projpolicy"
 	"github.com/danielbodart/quoin/sudo"

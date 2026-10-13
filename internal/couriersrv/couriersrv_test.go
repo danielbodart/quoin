@@ -1,4 +1,4 @@
-package courier
+package couriersrv
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/peer"
 	"github.com/danielbodart/quoin/projpolicy"
 	"golang.org/x/crypto/ssh"
@@ -145,7 +146,7 @@ func TestReadIsThePolicyAboveTheAnchorsWorkingDirectory(t *testing.T) {
 	h.put(root, body, true)
 	pid, start := sleeper(t, h.mkdir("Projects/foo/src/deep"))
 
-	got, err := Read(context.Background(), h.signer951().socket, pid, start)
+	got, err := courier.Read(context.Background(), h.signer951().socket, pid, start)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,14 +162,14 @@ func TestReadIsThePolicyAboveTheAnchorsWorkingDirectory(t *testing.T) {
 	other := h.mkdir("Projects/bar")
 	h.put(other, body, false)
 	pid, start = sleeper(t, other)
-	got, err = Read(context.Background(), h.as(952, 12).socket, pid, start)
+	got, err = courier.Read(context.Background(), h.as(952, 12).socket, pid, start)
 	if err != nil || got.Root != other || got.Sig != nil {
 		t.Fatalf("unsigned: %+v, %v", got, err)
 	}
 
 	// No policy file up to home is no root, and no error.
 	pid, start = sleeper(t, h.mkdir("Scratch"))
-	got, err = Read(context.Background(), h.signer951().socket, pid, start)
+	got, err = courier.Read(context.Background(), h.signer951().socket, pid, start)
 	if err != nil || got.Root != "" || got.Bytes != nil {
 		t.Fatalf("none: %+v, %v", got, err)
 	}
@@ -179,7 +180,7 @@ func TestReadWithNoFileIsTheRepositoryTheAnchorIsIn(t *testing.T) {
 	repo := h.mkdir("Projects/baz")
 	h.mkdir("Projects/baz/.git")
 	pid, start := sleeper(t, h.mkdir("Projects/baz/src"))
-	got, err := Read(context.Background(), h.signer951().socket, pid, start)
+	got, err := courier.Read(context.Background(), h.signer951().socket, pid, start)
 	if err != nil || got.Root != repo || got.Namespace != "frisket-policy:~/Projects/baz" || got.Digest != "" || got.Bytes != nil {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -190,14 +191,14 @@ func TestReadWithNoFileIsTheRepositoryTheAnchorIsIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid, start = sleeper(t, wt)
-	if got, err := Read(context.Background(), h.signer951().socket, pid, start); err != nil || got.Root != wt {
+	if got, err := courier.Read(context.Background(), h.signer951().socket, pid, start); err != nil || got.Root != wt {
 		t.Fatalf("worktree: %+v, %v", got, err)
 	}
 
 	// A policy file above the repository is the project's, not the repository.
 	h.put(h.mkdir("Projects"), body, true)
 	pid, start = sleeper(t, repo)
-	if got, err := Read(context.Background(), h.signer951().socket, pid, start); err != nil || got.Root != filepath.Dir(repo) || got.Digest == "" {
+	if got, err := courier.Read(context.Background(), h.signer951().socket, pid, start); err != nil || got.Root != filepath.Dir(repo) || got.Digest == "" {
 		t.Fatalf("file above: %+v, %v", got, err)
 	}
 }
@@ -207,14 +208,14 @@ func TestReadRefusesAReusedPidAndAProcessOutsideHome(t *testing.T) {
 	root := h.mkdir("Projects/foo")
 	h.put(root, body, true)
 	pid, start := sleeper(t, root)
-	if _, err := Read(context.Background(), h.signer951().socket, pid, start+1); err == nil || !strings.Contains(err.Error(), "not the process") {
+	if _, err := courier.Read(context.Background(), h.signer951().socket, pid, start+1); err == nil || !strings.Contains(err.Error(), "not the process") {
 		t.Errorf("another start: %v", err)
 	}
-	if _, err := Read(context.Background(), h.signer951().socket, pid, 0); err == nil {
+	if _, err := courier.Read(context.Background(), h.signer951().socket, pid, 0); err == nil {
 		t.Error("no start was accepted")
 	}
 	pid, start = sleeper(t, os.TempDir())
-	got, err := Read(context.Background(), h.signer951().socket, pid, start)
+	got, err := courier.Read(context.Background(), h.signer951().socket, pid, start)
 	if err != nil || got.Root != "" {
 		t.Errorf("outside home: %+v, %v", got, err)
 	}
@@ -231,7 +232,7 @@ func TestOnlyTheServedUnitsAsTheirUsersArePeers(t *testing.T) {
 		"the user's own uid":                  {uint64(os.Getuid()), 99},
 		"no cgroup":                           {951, 0},
 	} {
-		_, err := Read(context.Background(), h.as(int(who[0]), who[1]).socket, pid, start)
+		_, err := courier.Read(context.Background(), h.as(int(who[0]), who[1]).socket, pid, start)
 		if err == nil || !strings.HasPrefix(err.Error(), "refused: ") {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -244,7 +245,7 @@ func TestWriteIsACompareAndSwapOnTheOldDigest(t *testing.T) {
 	ctx := context.Background()
 
 	// A first file, where there was none.
-	got, err := Write(ctx, h.signer951().socket, root, "", body, h.sign(root, body))
+	got, err := courier.Write(ctx, h.signer951().socket, root, "", body, h.sign(root, body))
 	if err != nil || got.Digest != projpolicy.Digest(body) || got.Namespace != "frisket-policy:~/Projects/foo" {
 		t.Fatalf("first: %+v, %v", got, err)
 	}
@@ -254,16 +255,16 @@ func TestWriteIsACompareAndSwapOnTheOldDigest(t *testing.T) {
 	}
 
 	next, _ := projpolicy.Format([]byte(`{"signer": {"ssh": {"hosts": {"gateway": "allow", "nas": "allow"}}}}`))
-	if _, err := Write(ctx, h.signer951().socket, root, "", next, h.sign(root, next)); err == nil || !strings.Contains(err.Error(), ErrChanged.Error()) {
+	if _, err := courier.Write(ctx, h.signer951().socket, root, "", next, h.sign(root, next)); err == nil || !strings.Contains(err.Error(), courier.ErrChanged.Error()) {
 		t.Errorf("a stale digest: %v", err)
 	}
-	if _, err := Write(ctx, h.signer951().socket, root, projpolicy.Digest([]byte("{}\n")), next, h.sign(root, next)); err == nil || !strings.Contains(err.Error(), ErrChanged.Error()) {
+	if _, err := courier.Write(ctx, h.signer951().socket, root, projpolicy.Digest([]byte("{}\n")), next, h.sign(root, next)); err == nil || !strings.Contains(err.Error(), courier.ErrChanged.Error()) {
 		t.Errorf("another digest: %v", err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(root, "chase.json")); string(b) != string(body) {
 		t.Errorf("a refused write changed the file: %s", b)
 	}
-	if _, err := Write(ctx, h.signer951().socket, root, projpolicy.Digest(body), next, h.sign(root, next)); err != nil {
+	if _, err := courier.Write(ctx, h.signer951().socket, root, projpolicy.Digest(body), next, h.sign(root, next)); err != nil {
 		t.Fatal(err)
 	}
 	if p, _ := projpolicy.Load(root, h.home, "chase.json", mustSigners(t, h)); !p.Verified || string(p.Bytes) != string(next) {
@@ -292,7 +293,7 @@ func TestWriteRefusesWhatWouldNotVerify(t *testing.T) {
 		"relative":                    {"Projects/foo", body, body, "not absolute"},
 		"unclean":                     {root + "/../foo", body, body, "not absolute and clean"},
 	} {
-		_, err := Write(ctx, h.signer951().socket, c.root, "", c.b, c.sig)
+		_, err := courier.Write(ctx, h.signer951().socket, c.root, "", c.b, c.sig)
 		if err == nil || !strings.Contains(err.Error(), c.message) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -301,7 +302,7 @@ func TestWriteRefusesWhatWouldNotVerify(t *testing.T) {
 		t.Errorf("a refused write left a file: %v", err)
 	}
 	h.signer951()
-	if _, err := Call(ctx, h.socket, Request{Op: "delete", Root: root}); err == nil || !strings.Contains(err.Error(), "unknown op") {
+	if _, err := courier.Call(ctx, h.socket, courier.Request{Op: "delete", Root: root}); err == nil || !strings.Contains(err.Error(), "unknown op") {
 		t.Errorf("unknown op: %v", err)
 	}
 }

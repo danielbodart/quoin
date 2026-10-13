@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/execrule"
-	"github.com/danielbodart/quoin/internal/courier"
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/grant"
 	"github.com/danielbodart/quoin/peer"
