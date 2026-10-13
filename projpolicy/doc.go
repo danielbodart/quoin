@@ -2,8 +2,8 @@
 // it is signed in, the JSON Merge Patch that layers it, the SSHSIG sidecar
 // beside it (file.sig, as stock ssh-keygen -Y sign writes it), the
 // allowed_signers file that says whose signature counts, the namespace that
-// binds a signature to the project's directory, and finding the file above
-// a working directory.
+// binds a signature to the project's directory, finding the file above a
+// working directory, and the signer's reading of the file's signer section.
 //
 // It is public so that every program that reads, formats, merges, signs or
 // verifies the same file -- the launcher that writes it, the signer and the

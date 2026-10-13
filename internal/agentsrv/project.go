@@ -1,7 +1,6 @@
 package agentsrv
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -36,15 +35,6 @@ type Policy struct {
 }
 
 const courierTimeout = 3 * time.Second
-
-// A project's signer section may set only these: the rest of the signer's
-// settings are the host's.
-type projectSigner struct {
-	SSH *struct {
-		Hosts map[string]*Rule `json:"hosts"`
-	} `json:"ssh"`
-	SSHSIG map[string]*Rule `json:"sshsig"`
-}
 
 // layer is a project's policy file as the signer reads it.
 type layer struct {
@@ -215,7 +205,8 @@ func (s *Server) load(resp *courier.Response, signersFile []byte) (*layer, error
 	return l, nil
 }
 
-// readSigner checks a project's signer section: only ssh.hosts and sshsig,
+// readSigner reads a project's signer section by projpolicy's reading,
+// the one chase checks a project's file by: only ssh.hosts and sshsig,
 // each a map of allow, ask or null.
 func (l *layer) readSigner(v any) error {
 	if v == nil {
@@ -225,45 +216,24 @@ func (l *layer) readSigner(v any) error {
 	if err != nil {
 		return err
 	}
-	var ps projectSigner
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&ps); err != nil {
-		return fmt.Errorf("%w (a project may set ssh.hosts and sshsig)", err)
+	ps, err := projpolicy.ParseSignerSection(b)
+	if err != nil {
+		return err
 	}
 	l.hosts, l.sshsig = map[string]bool{}, map[string]bool{}
 	if ps.SSH != nil {
 		for k, r := range ps.SSH.Hosts {
-			if err := CheckHostRule(k); err != nil {
-				return fmt.Errorf("ssh.hosts: %w", err)
-			}
 			if r != nil {
-				if err := checkRule(*r); err != nil {
-					return fmt.Errorf("ssh.hosts.%s: %w", k, err)
-				}
 				l.hosts[k] = true
 			}
 		}
 	}
 	for ns, r := range ps.SSHSIG {
-		if ns == "" || strings.HasPrefix(ns, projpolicy.NamespacePrefix) {
-			return fmt.Errorf("sshsig: %q is not a namespace a rule may name", ns)
-		}
 		if r != nil {
-			if err := checkRule(*r); err != nil {
-				return fmt.Errorf("sshsig.%s: %w", ns, err)
-			}
 			l.sshsig[ns] = true
 		}
 	}
 	l.signer = v
-	return nil
-}
-
-func checkRule(r Rule) error {
-	if r != Allow && r != Ask {
-		return fmt.Errorf("%q is not allow or ask", string(r))
-	}
 	return nil
 }
 

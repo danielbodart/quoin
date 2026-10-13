@@ -241,7 +241,12 @@ func TestAnUnverifiedProjectIsIgnoredWithOneLine(t *testing.T) {
 			r.Root = foo
 			return r
 		}(),
-		"a host-only key": h.file(foo, "{\n  \"signer\": {\n    \"terminal\": \"allow\"\n  }\n}\n", true),
+		"a host-only key":              h.file(foo, "{\n  \"signer\": {\n    \"terminal\": \"allow\"\n  }\n}\n", true),
+		"a key in another case":        h.file(foo, "{\n  \"signer\": {\n    \"SSH\": {\n      \"hosts\": {\n        \"github.com\": \"allow\"\n      }\n    }\n  }\n}\n", true),
+		"a rule neither allow nor ask": h.file(foo, project(`{"github.com": "allow", "gitlab.com": "deny"}`), true),
+		"a host key out of grammar":    h.file(foo, project(`{"github.com": "allow", "a**b": "allow"}`), true),
+		"a policy namespace": h.file(foo, "{\n  \"signer\": {\n    \"ssh\": {\n      \"hosts\": {\n        \"github.com\": \"allow\"\n      }\n    },\n"+
+			"    \"sshsig\": {\n      \"quoin-policy:~/Projects/foo\": \"allow\"\n    }\n  }\n}\n", true),
 	} {
 		fc.reads[100] = r
 		for range 2 {

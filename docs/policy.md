@@ -203,8 +203,11 @@ SSHSIG from a chain not cut short it reads the asking program's project:
 
 - The file applies when its `.sig` verifies, in the namespace the signer
   names from the root itself, against the allowed signers, and its `signer`
-  section sets only `ssh.hosts` and `sshsig` (`allow`, `ask` or `null`).
-  It is merged over the host's settings with `MergePatch`.
+  section sets only `ssh.hosts` and `sshsig` (`allow`, `ask` or `null`),
+  each key spelt exactly so, as `projpolicy.ParseSignerSection` reads it:
+  an `ssh.hosts` key in the host grammar, and no `sshsig` namespace empty
+  or starting `quoin-policy`. It is merged over the host's settings with
+  `MergePatch`.
 - Anything else is ignored with one `project policy ignored` line per file
   (by root, digest, signature and signers), and decided as if there were
   no file; so is a courier that is down or absent.
@@ -264,6 +267,7 @@ read, format, merge and verify the same way:
 | `ReadFile(path)` | A regular file, not through a symlink, at most 1 MiB. |
 | `Decode`, `Encode`, `Format`, `Canonical` | Strict JSON and the canonical form. |
 | `MergePatch(target, patch)` | RFC 7396, on decoded values; neither is changed. |
+| `ParseSignerSection(b)` | A project's `signer` section as the signer reads it, or why the signer would ignore the file: chase checks a project's file by it. |
 | `Digest(b)` | `sha256:<hex>`, `""` for a nil (absent) file. |
 
 The SSHSIG and allowed-signers tests hold every line shape, principal,
