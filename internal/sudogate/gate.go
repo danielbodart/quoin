@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielbodart/galley/services"
 	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/execrule"
 	"github.com/danielbodart/quoin/internal/galleyask"
@@ -425,7 +426,7 @@ func (s *session) verify(req *request) {
 		return
 	}
 	until := a.answeredAt + a.answer.For
-	pin := proc{a.answer.Galley.Pid, a.answer.Galley.Start}
+	pin := proc{a.answer.Window.Pid, a.answer.Window.Start}
 	s.g.open(proc{a.r.Anchor.Pid, a.r.Anchor.Start}, window{until: until, galley: pin})
 	at := time.Now().Add(until - s.g.now()).Format("15:04")
 	s.record(a, "allow", "verified", []any{"window_until", at})
@@ -461,7 +462,7 @@ func (s *session) decide(a *sudoReq, wrong bool) {
 			if !got.Allowed {
 				s.record(a, "refuse", "galley", nil)
 				s.reply(replyNo, "refused")
-			} else if (proc{got.Galley.Pid, got.Galley.Start}) != *pin {
+			} else if (proc{got.Window.Pid, got.Window.Start}) != *pin {
 				s.record(a, "refuse", "not the pinned galley", []any{"pin_pid", pin.pid, "pin_start", pin.start})
 				s.reply(replyNo, "refused")
 			} else {
@@ -504,7 +505,7 @@ func (s *session) post(a *sudoReq, wrong bool) (got galleyask.Answer, pin *proc,
 		}
 		q := a.question(pin != nil, wrong)
 		ctx, cancel := context.WithCancel(context.Background())
-		stop, werr := galleyask.WatchHangUp(s.c, s.g.Log, cancel)
+		stop, werr := services.WatchHangUp(s.c, cancel)
 		if werr != nil {
 			cancel()
 			return galleyask.Answer{}, nil, false, werr
@@ -553,7 +554,7 @@ func (s *session) record(a *sudoReq, outcome, source string, extra []any) {
 		"chain", a.r.Chain, "anchor", a.r.Anchor, "cut", a.r.Cut, "session_root", a.r.SessionRoot,
 		"pid", s.peer.Pid, "program", a.program, "argv", a.argv, "danger", a.danger, "env", a.env,
 		"truncated", a.truncated, "outcome", outcome, "source", source, "for", a.answer.For.String(),
-		"galley_pid", a.answer.Galley.Pid, "galley_cgroup", a.answer.Galley.Cgroup,
+		"galley_pid", a.answer.Window.Pid, "galley_cgroup", a.answer.Window.Cgroup,
 	}
 	s.g.Log.Info("decision", append(attrs, extra...)...)
 }

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielbodart/galley/services"
 	"github.com/danielbodart/galley/wire"
 	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/internal/galleyask"
@@ -107,7 +108,7 @@ func (s *Server) policyDefaults() {
 		}
 	}
 	if s.notify == nil {
-		s.notify = galleyask.Notify
+		s.notify = services.Notify
 	}
 	if s.inHost == nil {
 		s.inHost = peer.InOwnUserns
@@ -380,10 +381,10 @@ func (c *conn) saveAlways(req *request) {
 	c.s.Log.Warn("always", append(attrs, "outcome", "not saved", "err", err.Error())...)
 	text := fmt.Sprintf("The rule for %s was not saved into %s: %s\nThis login was allowed once.",
 		a.name, a.path, galleyask.Clean(err.Error()))
+	// The notice stays until it is dismissed, which is when notify
+	// returns, so it is left to a goroutine of its own.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := c.s.notify(ctx, c.s.User, text); err != nil {
+		if err := c.s.notify(context.Background(), c.s.User, text); err != nil {
 			c.s.Log.Info("always notice not shown", "err", err.Error())
 		}
 	}()

@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/galley/services"
 	"github.com/danielbodart/galley/wire"
-	"golang.org/x/sys/unix"
 )
 
 // fakeGalley listens where Ask dials, answers one item with reply (none when
@@ -35,16 +35,11 @@ func startGalley(t *testing.T, reply string, inGalleyCgroup bool) *fakeGalley {
 		t.Fatal(err)
 	}
 	dir := shortDir(t)
-	oldDir, oldCgroup := socketDir, galleyCgroup
-	t.Cleanup(func() { socketDir, galleyCgroup = oldDir, oldCgroup })
-	socketDir = dir
 	own := ownCgroup(t)
-	galleyCgroup = func(int) (uint64, error) {
-		if inGalleyCgroup {
-			return own, nil
-		}
-		return own + 1, nil
+	if !inGalleyCgroup {
+		own++
 	}
+	useClient(t, dir, own)
 
 	l, err := net.Listen("unix", filepath.Join(dir, me.Username+".sock"))
 	if err != nil {
@@ -88,16 +83,20 @@ func shortDir(t *testing.T) string {
 
 func ownCgroup(t *testing.T) uint64 {
 	t.Helper()
-	pidfd, err := unix.PidfdOpen(os.Getpid(), 0)
+	id, err := services.CgroupID(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(pidfd)
-	info := unix.PidfdInfo{Mask: unix.PIDFD_INFO_CGROUPID}
-	if err := unix.IoctlPidfdInfo(pidfd, &info); err != nil {
-		t.Fatal(err)
-	}
-	return info.Cgroupid
+	return id
+}
+
+// useClient has Ask find the sockets in dir and take the process in the
+// cgroup numbered cgroup for galley.service, for the rest of the test.
+func useClient(t *testing.T, dir string, cgroup uint64) {
+	t.Helper()
+	old := client
+	t.Cleanup(func() { client = old })
+	client = services.Client{Dir: dir, Cgroup: func(int) (uint64, error) { return cgroup, nil }}
 }
 
 func golden(t *testing.T, name string) string {
@@ -135,7 +134,7 @@ func TestAnAnswerFromAPeerWithAnotherUIDIsNobody(t *testing.T) {
 	if other.Uid == strconv.Itoa(os.Getuid()) {
 		t.Skip("running as nobody")
 	}
-	if err := os.Symlink(filepath.Join(socketDir, g.user+".sock"), filepath.Join(socketDir, "nobody.sock")); err != nil {
+	if err := os.Symlink(filepath.Join(client.Dir, g.user+".sock"), filepath.Join(client.Dir, "nobody.sock")); err != nil {
 		t.Fatal(err)
 	}
 	_, err = Ask(context.Background(), "nobody", Question{Title: "ssh to server"})
@@ -146,7 +145,7 @@ func TestAnAnswerFromAPeerWithAnotherUIDIsNobody(t *testing.T) {
 
 func TestNoSocketIsNobody(t *testing.T) {
 	g := startGalley(t, "", true)
-	socketDir = shortDir(t)
+	client.Dir = shortDir(t)
 	if _, err := Ask(context.Background(), g.user, Question{}); !errors.Is(err, ErrNobody) {
 		t.Fatalf("got %v, want nobody", err)
 	}
@@ -217,8 +216,8 @@ func TestEveryGoldenAnswerLineDecodesToItsResult(t *testing.T) {
 			if a.Allowed != c.allowed || a.For != c.for_ || string(a.Password) != c.pw {
 				t.Errorf("got allowed %v for %v password %q", a.Allowed, a.For, a.Password)
 			}
-			if a.Galley.Pid != os.Getpid() || a.Galley.Start == 0 || a.Galley.Cgroup == "" {
-				t.Errorf("galley pid %d start %d, want pid %d", a.Galley.Pid, a.Galley.Start, os.Getpid())
+			if a.Window.Pid != os.Getpid() || a.Window.Start == 0 || a.Window.Cgroup == "" {
+				t.Errorf("galley pid %d start %d, want pid %d", a.Window.Pid, a.Window.Start, os.Getpid())
 			}
 		})
 	}
@@ -231,7 +230,7 @@ func TestGalleyGoingAwayBeforeAnAnswerIsNobody(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	socketDir = filepath.Dir(l.Addr().String())
+	client.Dir = filepath.Dir(l.Addr().String())
 	go func() {
 		c, err := l.Accept()
 		if err == nil {
@@ -320,11 +319,7 @@ func startGalleys(t *testing.T, replies ...string) (string, chan []byte) {
 		t.Fatal(err)
 	}
 	dir := shortDir(t)
-	oldDir, oldCgroup := socketDir, galleyCgroup
-	t.Cleanup(func() { socketDir, galleyCgroup = oldDir, oldCgroup })
-	socketDir = dir
-	own := ownCgroup(t)
-	galleyCgroup = func(int) (uint64, error) { return own, nil }
+	useClient(t, dir, ownCgroup(t))
 	l, err := net.Listen("unix", filepath.Join(dir, me.Username+".sock"))
 	if err != nil {
 		t.Fatal(err)
@@ -373,10 +368,10 @@ func TestAlwaysIsPutWithItsDiffAndAnsweredAlways(t *testing.T) {
 	}
 }
 
-// A galley that does not speak the item's protocol version is no one to
-// ask: the question is put once, and never again without what it offered.
-func TestAGalleyThatRefusesTheVersionIsNoOneToAsk(t *testing.T) {
-	name, items := startGalleys(t, `{"error":"protocol version 5 is not one from 1 to 4"}`, `{"answer":"extra"}`)
+// A galley that refuses the item is no one to ask: the question is put
+// once, and never again without what it offered.
+func TestAGalleyThatRefusesTheItemIsNoOneToAsk(t *testing.T) {
+	name, items := startGalleys(t, `{"error":"protocol version 5 is not 6"}`, `{"answer":"extra"}`)
 	a, err := Ask(context.Background(), name, alwaysQuestion)
 	if !errors.Is(err, ErrNobody) || a.Allowed {
 		t.Fatalf("got %+v, %v", a, err)

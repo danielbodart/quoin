@@ -7,7 +7,9 @@
 // answers the fields in order, `cancel`, `answer N` presses extra button N,
 // `always` presses galley's own Always button, and `never` leaves the
 // question up until its client hangs up. A notification is logged and
-// queued, and takes no action.
+// dismissed at once, as galley's services client waits for, and takes no
+// action. An item at any protocol version but wire.Version is refused, as
+// the window refuses it.
 package main
 
 import (
@@ -135,10 +137,16 @@ func (g *galley) serve(c *net.UnixConn) {
 		g.write(map[string]any{"event": "error", "error": fmt.Sprintf("no item: %v", err), "uid": cred.Uid, "pid": cred.Pid})
 		return
 	}
+	if hello.Galley != wire.Version {
+		g.write(map[string]any{"event": "error", "error": fmt.Sprintf("protocol version %d", hello.Galley), "uid": cred.Uid, "pid": cred.Pid})
+		line, _ := json.Marshal(wire.Answer{Error: fmt.Sprintf("protocol version %d is not %d", hello.Galley, wire.Version)})
+		c.Write(append(line, '\n'))
+		return
+	}
 	it := hello.Item
 	if it.Kind == wire.KindNotification {
 		g.write(map[string]any{"event": "notification", "text": it.Text, "uid": cred.Uid, "pid": cred.Pid})
-		line, _ := json.Marshal(wire.Answer{Queued: true})
+		line, _ := json.Marshal(wire.Answer{Answer: wire.AnswerOK})
 		c.Write(append(line, '\n'))
 		return
 	}

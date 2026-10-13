@@ -290,13 +290,13 @@ func restart(links []peer.Link, unit string) sudoCmd {
 
 func password(pw string, d time.Duration, galley int) answered {
 	a := galleyask.Answer{Allowed: true, Password: []byte(pw), For: d}
-	a.Galley.Pid, a.Galley.Start = galley, uint64(galley)*10
+	a.Window.Pid, a.Window.Start = galley, uint64(galley)*10
 	return answered{a: a}
 }
 
 func allow(galley int) answered {
 	a := galleyask.Answer{Allowed: true}
-	a.Galley.Pid, a.Galley.Start = galley, uint64(galley)*10
+	a.Window.Pid, a.Window.Start = galley, uint64(galley)*10
 	return answered{a: a}
 }
 

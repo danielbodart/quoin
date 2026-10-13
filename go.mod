@@ -8,7 +8,7 @@ module github.com/danielbodart/quoin
 go 1.26.0
 
 require (
-	github.com/danielbodart/galley v0.29.21-0.20261012161250-a79ebab9952e
+	github.com/danielbodart/galley v0.30.22-0.20261013085913-4f8859f2327b
 	github.com/foxboron/go-tpm-keyfiles v0.0.0-20260427185012-515ba073c4c1
 	github.com/google/go-tpm v0.9.9-0.20260124013517-8f8f42cba0de
 	golang.org/x/crypto v0.57.0

@@ -1,23 +1,18 @@
 // Package galleyask puts one question to the person through galley's
-// services socket, and trusts the answer only from galley.service.
+// services socket, and trusts the answer only from galley.service. The
+// socket, the peer check and the conversation are galley's services
+// client's; what is here is quoin's: how a question is laid out as a
+// wire.Item, and what the window's answer means.
 package galleyask
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
-	"net"
-	"os/user"
-	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/danielbodart/galley/services"
 	"github.com/danielbodart/galley/wire"
-	"github.com/danielbodart/quoin/peer"
-	"golang.org/x/sys/unix"
 )
 
 type Question struct {
@@ -46,139 +41,29 @@ type Answer struct {
 	Always bool
 	// Password is the dialog's only; the caller zeroes it.
 	Password []byte
-	Galley   struct {
-		Pid    int
-		Start  uint64
-		Cgroup string
-	}
+	// Window is the galley process that answered, which services checked
+	// was the user's galley.service before the question was put.
+	Window services.Window
 }
 
-var ErrNobody = errors.New("no one to ask")
+// ErrNobody is services' own: no window to answer, whatever the reason.
+var ErrNobody = services.ErrNobody
 
 const maxFor = 24 * time.Hour
 
-var (
-	socketDir = "/run/galley-ask"
+// client reaches the window; a test moves its sockets and cgroup.
+var client services.Client
 
-	galleyCgroup = func(uid int) (uint64, error) {
-		var st unix.Stat_t
-		path := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/app.slice/galley.service", uid, uid)
-		if err := unix.Stat(path, &st); err != nil {
-			return 0, err
-		}
-		return st.Ino, nil
-	}
-)
-
-// Ask puts q to name's galley. A galley that refuses the item, an older one
-// that does not speak its protocol version among them, is no one to ask.
+// Ask puts q to name's galley, through galley's services client, which
+// finds the socket, checks the peer is the user's galley.service and
+// carries the item and its answer. A galley that refuses the item is no one
+// to ask, and the question is put once.
 func Ask(ctx context.Context, name string, q Question) (Answer, error) {
-	u, err := user.Lookup(name)
+	w, win, err := client.Ask(ctx, name, item(name, q))
 	if err != nil {
 		return Answer{}, err
 	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return Answer{}, err
-	}
-
-	var d net.Dialer
-	c, err := d.DialContext(ctx, "unix", filepath.Join(socketDir, name+".sock"))
-	if err != nil {
-		if ctx.Err() != nil {
-			return Answer{}, ctx.Err()
-		}
-		return Answer{}, fmt.Errorf("%w: %v", ErrNobody, err)
-	}
-	conn := c.(*net.UnixConn)
-	defer conn.Close()
-	defer context.AfterFunc(ctx, func() { conn.Close() })()
-
-	l, err := checkPeer(conn, uid)
-	if err != nil {
-		return Answer{}, fmt.Errorf("%w: %v", ErrNobody, err)
-	}
-	var a Answer
-	a.Galley.Pid, a.Galley.Start, a.Galley.Cgroup = l.Pid, l.Start, l.Cgroup
-
-	it := item(name, q)
-	line, err := json.Marshal(wire.Hello{Galley: wire.Needs(it), Item: it})
-	if err != nil {
-		return Answer{}, err
-	}
-	var w wire.Answer
-	if _, err = conn.Write(append(line, '\n')); err == nil {
-		err = json.NewDecoder(bufio.NewReader(conn)).Decode(&w)
-	}
-	if ctx.Err() != nil {
-		return Answer{}, ctx.Err()
-	}
-	if err != nil {
-		return Answer{}, fmt.Errorf("%w: %v", ErrNobody, err)
-	}
-	if w.Error != "" {
-		return Answer{}, fmt.Errorf("%w: galley says %q", ErrNobody, w.Error)
-	}
-	return answer(q, w, a), nil
-}
-
-// Notify leaves a notification in name's galley, there until it is
-// dismissed, and returns once galley has queued it.
-func Notify(ctx context.Context, name, text string) error {
-	u, err := user.Lookup(name)
-	if err != nil {
-		return err
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return err
-	}
-	var d net.Dialer
-	c, err := d.DialContext(ctx, "unix", filepath.Join(socketDir, name+".sock"))
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrNobody, err)
-	}
-	conn := c.(*net.UnixConn)
-	defer conn.Close()
-	defer context.AfterFunc(ctx, func() { conn.Close() })()
-	if _, err := checkPeer(conn, uid); err != nil {
-		return fmt.Errorf("%w: %v", ErrNobody, err)
-	}
-	it := &wire.Item{Kind: wire.KindNotification, Text: text, Note: &wire.Note{}}
-	line, err := json.Marshal(wire.Hello{Galley: wire.Needs(it), Item: it})
-	if err != nil {
-		return err
-	}
-	var w wire.Answer
-	if _, err = conn.Write(append(line, '\n')); err == nil {
-		err = json.NewDecoder(bufio.NewReader(conn)).Decode(&w)
-	}
-	if err == nil && w.Error != "" {
-		err = fmt.Errorf("galley says %q", w.Error)
-	}
-	return err
-}
-
-func checkPeer(c *net.UnixConn, uid int) (peer.Link, error) {
-	r, err := peer.FromConn(c)
-	if err != nil {
-		return peer.Link{}, fmt.Errorf("galley peer: %w", err)
-	}
-	if r.PeerUID != uid {
-		return peer.Link{}, fmt.Errorf("galley peer uid %d is not %d", r.PeerUID, uid)
-	}
-	if len(r.Chain) == 0 {
-		return peer.Link{}, errors.New("galley peer cannot be read")
-	}
-	l := r.Chain[0]
-	galley, err := galleyCgroup(uid)
-	if err != nil {
-		return peer.Link{}, fmt.Errorf("galley.service: %w", err)
-	}
-	if r.CgroupID != galley {
-		return peer.Link{}, fmt.Errorf("galley peer pid %d is in %s, not galley.service", l.Pid, l.Cgroup)
-	}
-	return l, nil
+	return answer(q, w, Answer{Window: win}), nil
 }
 
 func item(name string, q Question) *wire.Item {

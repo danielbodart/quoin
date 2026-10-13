@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielbodart/galley/services"
 	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/grant"
@@ -400,7 +401,7 @@ type answered struct {
 func (c *conn) ask(req *request) verdict {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop, err := galleyask.WatchHangUp(c.c, c.s.Log, cancel)
+	stop, err := services.WatchHangUp(c.c, cancel)
 	if err != nil {
 		return verdict{source: "nobody", err: err}
 	}
@@ -458,7 +459,7 @@ func (c *conn) record(req *request, v verdict) {
 		"destination", req.dest, "key", req.keyFP, "class", req.class, "namespace", req.namespace,
 		"forwarded", req.fwd, "lines", strings.Split(req.question.Text, "\n"),
 		"outcome", outcome, "source", v.source, "for", v.answer.For.String(),
-		"galley_pid", v.answer.Galley.Pid, "galley_cgroup", v.answer.Galley.Cgroup,
+		"galley_pid", v.answer.Window.Pid, "galley_cgroup", v.answer.Window.Cgroup,
 	}
 	if l := req.proj; l != nil {
 		attrs = append(attrs, "project", l.root, "project_digest", l.digest, "project_applies", l.apply)

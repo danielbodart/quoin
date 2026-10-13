@@ -10,7 +10,6 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/danielbodart/galley/wire"
 	"github.com/danielbodart/quoin/peer"
 )
 
@@ -272,7 +271,7 @@ func TestASignersChainIsItsLinksAndItsSummaryTheLeaf(t *testing.T) {
 		t.Errorf("the decision's anchor is %s, session root %v, cut %v", r.Anchor.Comm, r.SessionRoot, r.Cut)
 	}
 	it := item("dan", Question{Title: "t", Chain: c})
-	if it.Table == nil || it.Table.Summary != c.Summary || len(it.Table.Rows) != 3 || wire.Needs(it) != 4 {
+	if it.Table == nil || it.Table.Summary != c.Summary || len(it.Table.Rows) != 3 {
 		t.Errorf("item table %+v", it.Table)
 	}
 }
