@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/danielbodart/frisket/execrule"
-	"github.com/danielbodart/frisket/internal/courier"
-	"github.com/danielbodart/frisket/internal/galleyask"
-	"github.com/danielbodart/frisket/internal/grant"
-	"github.com/danielbodart/frisket/internal/peer"
-	"github.com/danielbodart/frisket/sudo"
+	"github.com/danielbodart/quoin/execrule"
+	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/internal/galleyask"
+	"github.com/danielbodart/quoin/internal/grant"
+	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/sudo"
 	"golang.org/x/crypto/ssh"
 )
 

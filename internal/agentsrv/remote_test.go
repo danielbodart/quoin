@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielbodart/frisket/internal/galleyask"
-	"github.com/danielbodart/frisket/internal/grant"
-	"github.com/danielbodart/frisket/internal/sudomsg"
+	"github.com/danielbodart/quoin/internal/galleyask"
+	"github.com/danielbodart/quoin/internal/grant"
+	"github.com/danielbodart/quoin/internal/sudomsg"
 	"golang.org/x/crypto/ssh"
 )
 

@@ -31,8 +31,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/danielbodart/frisket/internal/peer"
-	"github.com/danielbodart/frisket/projpolicy"
+	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/projpolicy"
 	"golang.org/x/sys/unix"
 )
 

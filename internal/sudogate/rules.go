@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/danielbodart/frisket/internal/courier"
-	"github.com/danielbodart/frisket/internal/galleyask"
-	"github.com/danielbodart/frisket/internal/peer"
-	"github.com/danielbodart/frisket/projpolicy"
-	"github.com/danielbodart/frisket/sudo"
+	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/internal/galleyask"
+	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/projpolicy"
+	"github.com/danielbodart/quoin/sudo"
 )
 
 // Policy is where the gate finds the signed policy of the project a sudo

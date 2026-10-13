@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danielbodart/frisket/internal/peer"
+	"github.com/danielbodart/quoin/peer"
 	"golang.org/x/crypto/ssh"
 )
 

@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielbodart/frisket/internal/galleyask"
-	"github.com/danielbodart/frisket/internal/peer"
-	"github.com/danielbodart/frisket/sudo"
+	"github.com/danielbodart/quoin/internal/galleyask"
+	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/sudo"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 	"pgregory.net/rapid"

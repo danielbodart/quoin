@@ -13,8 +13,8 @@ import (
 	"os/user"
 	"strconv"
 
-	"github.com/danielbodart/frisket/internal/sdnotify"
-	"github.com/danielbodart/frisket/internal/sudogate"
+	"github.com/danielbodart/quoin/internal/sudogate"
+	"github.com/danielbodart/quoin/sdnotify"
 )
 
 const usage = `frisket-sudo -- the gate for sudo with no terminal, asked through galley

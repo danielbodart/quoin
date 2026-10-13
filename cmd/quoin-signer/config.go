@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/danielbodart/frisket/internal/agentsrv"
-	"github.com/danielbodart/frisket/projpolicy"
+	"github.com/danielbodart/quoin/internal/agentsrv"
+	"github.com/danielbodart/quoin/projpolicy"
 )
 
 const defaultConfig = "/etc/frisket-signer/config.json"

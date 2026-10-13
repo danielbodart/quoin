@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/danielbodart/frisket/hostpattern"
+	"github.com/danielbodart/quoin/hostpattern"
 )
 
 // CheckHostRule says what is wrong with a host rule's key, if anything: a

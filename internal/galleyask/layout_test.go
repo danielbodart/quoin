@@ -10,8 +10,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/danielbodart/frisket/internal/peer"
 	"github.com/danielbodart/galley/wire"
+	"github.com/danielbodart/quoin/peer"
 )
 
 func TestSplitPutsEachTopLevelSegmentOnALineOfItsOwn(t *testing.T) {

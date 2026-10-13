@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/danielbodart/frisket/projpolicy"
-	"github.com/danielbodart/frisket/sudo"
+	"github.com/danielbodart/quoin/projpolicy"
+	"github.com/danielbodart/quoin/sudo"
 	"golang.org/x/crypto/ssh"
 )
 

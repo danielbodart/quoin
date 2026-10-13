@@ -10,10 +10,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/danielbodart/frisket/internal/courier"
-	"github.com/danielbodart/frisket/internal/peer"
-	"github.com/danielbodart/frisket/projpolicy"
-	"github.com/danielbodart/frisket/sudo"
+	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/projpolicy"
+	"github.com/danielbodart/quoin/sudo"
 	"golang.org/x/crypto/ssh"
 )
 

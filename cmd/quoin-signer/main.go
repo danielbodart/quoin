@@ -16,10 +16,10 @@ import (
 	"os/user"
 	"strconv"
 
-	"github.com/danielbodart/frisket/internal/agentsrv"
-	"github.com/danielbodart/frisket/internal/grant"
-	"github.com/danielbodart/frisket/internal/sdnotify"
-	"github.com/danielbodart/frisket/internal/tpmkey"
+	"github.com/danielbodart/quoin/internal/agentsrv"
+	"github.com/danielbodart/quoin/internal/grant"
+	"github.com/danielbodart/quoin/internal/tpmkey"
+	"github.com/danielbodart/quoin/sdnotify"
 )
 
 const (

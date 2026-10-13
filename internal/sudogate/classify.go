@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/danielbodart/frisket/execrule"
-	"github.com/danielbodart/frisket/internal/galleyask"
+	"github.com/danielbodart/quoin/execrule"
+	"github.com/danielbodart/quoin/internal/galleyask"
 )
 
 var envAllowed = map[string]bool{

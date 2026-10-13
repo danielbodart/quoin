@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danielbodart/frisket/sudo"
+	"github.com/danielbodart/quoin/sudo"
 	"golang.org/x/crypto/ssh"
 )
 

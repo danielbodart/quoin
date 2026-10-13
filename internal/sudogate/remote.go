@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/danielbodart/frisket/internal/galleyask"
-	"github.com/danielbodart/frisket/internal/sudomsg"
+	"github.com/danielbodart/quoin/internal/galleyask"
+	"github.com/danielbodart/quoin/internal/sudomsg"
 	"golang.org/x/crypto/ssh"
 )
 

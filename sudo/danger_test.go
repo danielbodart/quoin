@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danielbodart/frisket/execrule"
+	"github.com/danielbodart/quoin/execrule"
 )
 
 func TestTheCatalogueCompilesAndEveryMatchAsksWithAReason(t *testing.T) {

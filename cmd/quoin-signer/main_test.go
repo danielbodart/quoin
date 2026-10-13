@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danielbodart/frisket/internal/agentsrv"
+	"github.com/danielbodart/quoin/internal/agentsrv"
 )
 
 func writeConfig(t *testing.T, body string) string {

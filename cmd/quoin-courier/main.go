@@ -19,9 +19,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/danielbodart/frisket/internal/courier"
-	"github.com/danielbodart/frisket/internal/sdnotify"
-	"github.com/danielbodart/frisket/projpolicy"
+	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/projpolicy"
+	"github.com/danielbodart/quoin/sdnotify"
 )
 
 const defaultSocket = "/run/frisket-policy/sock"

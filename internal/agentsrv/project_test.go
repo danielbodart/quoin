@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielbodart/frisket/hostpattern"
-	"github.com/danielbodart/frisket/internal/courier"
-	"github.com/danielbodart/frisket/internal/galleyask"
-	"github.com/danielbodart/frisket/internal/peer"
-	"github.com/danielbodart/frisket/projpolicy"
+	"github.com/danielbodart/quoin/hostpattern"
+	"github.com/danielbodart/quoin/internal/courier"
+	"github.com/danielbodart/quoin/internal/galleyask"
+	"github.com/danielbodart/quoin/peer"
+	"github.com/danielbodart/quoin/projpolicy"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )

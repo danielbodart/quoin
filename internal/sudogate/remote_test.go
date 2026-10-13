@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danielbodart/frisket/internal/peer"
-	"github.com/danielbodart/frisket/internal/sudomsg"
+	"github.com/danielbodart/quoin/internal/sudomsg"
+	"github.com/danielbodart/quoin/peer"
 	"golang.org/x/crypto/ssh"
 )
 
