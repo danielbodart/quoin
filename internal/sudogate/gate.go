@@ -47,6 +47,10 @@ type Gate struct {
 	ask   func(context.Context, string, galleyask.Question) (galleyask.Answer, error)
 	alive func(pid int, start uint64) bool
 	now   func() time.Duration
+	// stayed, when set, is called each time a waiting dialog has seen a new
+	// window and goes on waiting as it was: what a test waits on to know
+	// every row has seen the window, there being no other sign of it.
+	stayed func()
 
 	read    func(ctx context.Context, pid int, start uint64) (*courier.Response, error)
 	signers func() ([]byte, error)
@@ -537,6 +541,9 @@ func (s *session) post(a *sudoReq, wrong bool) (got galleyask.Answer, pin *proc,
 					clear(r.a.Password)
 					again = true
 					break wait
+				}
+				if s.g.stayed != nil {
+					s.g.stayed()
 				}
 			}
 		}

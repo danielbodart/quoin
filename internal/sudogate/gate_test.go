@@ -55,12 +55,24 @@ type harness struct {
 	dir       string
 	g         *Gate
 	path      string
-	peers     chan peer.Proc
+	peers     chan dialed
 	questions chan *asked
 	log       *lockedBuffer
 	clock     atomic.Int64
 	mu        sync.Mutex
 	dead      map[proc]bool
+	// served is closed for each connection when the gate is done with it,
+	// keyed by the gate's end, which who sees first.
+	served map[*net.UnixConn]chan struct{}
+	// stays counts the gate's stayed calls, and moved wakes whoever waits
+	// for more of them.
+	stays int
+	moved *sync.Cond
+}
+
+type dialed struct {
+	p      peer.Proc
+	served chan struct{}
 }
 
 func newHarness(t *testing.T) *harness {
@@ -72,13 +84,26 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	h := &harness{
 		t: t, dir: dir, path: filepath.Join(dir, "gate.sock"),
-		peers: make(chan peer.Proc), questions: make(chan *asked, 16),
-		log: &lockedBuffer{}, dead: map[proc]bool{},
+		peers: make(chan dialed), questions: make(chan *asked, 16),
+		log: &lockedBuffer{}, dead: map[proc]bool{}, served: map[*net.UnixConn]chan struct{}{},
 	}
+	h.moved = sync.NewCond(&h.mu)
 	h.clock.Store(int64(time.Hour))
 	h.g = &Gate{
 		User: "dan", Log: slog.New(slog.NewJSONHandler(h.log, nil)),
-		who: func(*net.UnixConn) (peer.Proc, error) { return <-h.peers, nil },
+		who: func(c *net.UnixConn) (peer.Proc, error) {
+			d := <-h.peers
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.served[c] = d.served
+			return d.p, nil
+		},
+		stayed: func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.stays++
+			h.moved.Broadcast()
+		},
 		ask: h.ask,
 		alive: func(pid int, start uint64) bool {
 			h.mu.Lock()
@@ -102,10 +127,26 @@ func newHarness(t *testing.T) *harness {
 			if err != nil {
 				return
 			}
-			go h.g.serve(c)
+			go func() {
+				h.g.serve(c)
+				h.mu.Lock()
+				defer h.mu.Unlock()
+				if done, ok := h.served[c]; ok {
+					close(done)
+				}
+			}()
 		}
 	}()
 	return h
+}
+
+// stayedFor waits until the gate has called stayed n times in all.
+func (h *harness) stayedFor(n int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for h.stays < n {
+		h.moved.Wait()
+	}
 }
 
 func (h *harness) ask(ctx context.Context, user string, q galleyask.Question) (galleyask.Answer, error) {
@@ -121,30 +162,34 @@ func (h *harness) ask(ctx context.Context, user string, q galleyask.Question) (g
 }
 
 func (h *harness) next() *asked {
-	h.t.Helper()
-	select {
-	case a := <-h.questions:
-		return a
-	case <-time.After(10 * time.Second):
-		h.t.Fatal("nothing was asked")
-		return nil
-	}
+	return <-h.questions
 }
 
+// none is that nothing has been asked. It waits for nothing: the gate
+// asks before it replies, so a reply the test has read says whether its
+// request was asked about, and a row a window leaves waiting is waited for
+// with stayedFor.
 func (h *harness) none() {
 	h.t.Helper()
 	select {
 	case a := <-h.questions:
 		h.t.Fatalf("asked %q", a.q.Title)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 }
 
 func (h *harness) advance(d time.Duration) { h.clock.Add(int64(d)) }
 
 type client struct {
-	t *testing.T
-	c *net.UnixConn
+	t      *testing.T
+	c      *net.UnixConn
+	served chan struct{}
+}
+
+// hangUp closes the client and waits until the gate is done with it.
+func (c *client) hangUp() {
+	c.c.Close()
+	<-c.served
 }
 
 func (h *harness) dial(p peer.Proc) *client {
@@ -154,8 +199,9 @@ func (h *harness) dial(p peer.Proc) *client {
 		h.t.Fatal(err)
 	}
 	h.t.Cleanup(func() { c.Close() })
-	h.peers <- p
-	return &client{t: h.t, c: c}
+	served := make(chan struct{})
+	h.peers <- dialed{p, served}
+	return &client{t: h.t, c: c, served: served}
 }
 
 // sudo is a client that has checked in as the sudo with pid.
@@ -330,17 +376,6 @@ func TestOnlyARootPeerChecksIn(t *testing.T) {
 	}
 }
 
-func eventually(t *testing.T, cond func() bool) {
-	t.Helper()
-	for range 5000 {
-		if cond() {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("never")
-}
-
 func TestGIsYesOnlyWhenThePeersParentIsALiveCheckIn(t *testing.T) {
 	h := newHarness(t)
 	s := h.sudo(500)
@@ -362,8 +397,10 @@ func TestGIsYesOnlyWhenThePeersParentIsALiveCheckIn(t *testing.T) {
 	if k := g(peer.Proc{UID: 0, Pid: 600, PPid: 500, PPidStart: 4999}); k != replyNo {
 		t.Errorf("a peer whose parent is a reused pid got %q", k)
 	}
-	s.c.Close()
-	eventually(t, func() bool { return !h.g.checkedIn(proc{500, 5000}) })
+	s.hangUp()
+	if h.g.checkedIn(proc{500, 5000}) {
+		t.Error("a closed check-in is still checked in")
+	}
 	if k := g(peer.Proc{UID: 0, Pid: 600, PPid: 500, PPidStart: 5000}); k != replyNo {
 		t.Errorf("a closed check-in's child got %q", k)
 	}
@@ -449,13 +486,15 @@ func TestHangUpWithdrawsTheRowAndEndsTheCheckIn(t *testing.T) {
 	c := h.sudo(500)
 	c.send(approval(restart(claude(100), "foo")))
 	a := h.next()
-	c.c.Close()
+	c.hangUp()
 	select {
 	case <-a.withdrawn:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the row was never withdrawn")
+	default:
+		t.Error("the row was not withdrawn")
 	}
-	eventually(t, func() bool { return !h.g.checkedIn(proc{500, 5000}) })
+	if h.g.checkedIn(proc{500, 5000}) {
+		t.Error("a hung-up check-in is still checked in")
+	}
 }
 
 func TestANewWindowTurnsTheClaudesWaitingDialogsIntoQuestions(t *testing.T) {
@@ -485,6 +524,9 @@ func TestANewWindowTurnsTheClaudesWaitingDialogsIntoQuestions(t *testing.T) {
 	}
 	q.reply <- allow(900)
 	same.want(replyYes, "")
+	// c's claude has no window and sshd.service is danger: both saw the
+	// window and stayed as they were.
+	h.stayedFor(2)
 	h.none()
 	for _, title := range []string{"sudo systemctl restart c", "sudo systemctl restart sshd.service"} {
 		select {

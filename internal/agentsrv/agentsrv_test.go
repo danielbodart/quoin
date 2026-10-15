@@ -72,6 +72,11 @@ type harness struct {
 	// process of a unit listed as one.
 	loginSigner  atomic.Bool
 	policySigner atomic.Bool
+	// stays counts the server's stayed calls, and moved wakes whoever
+	// waits for more of them.
+	mu    sync.Mutex
+	stays int
+	moved *sync.Cond
 }
 
 func newHarness(t *testing.T, keys int, configure func(*Server)) *harness {
@@ -98,7 +103,14 @@ func newHarness(t *testing.T, keys int, configure func(*Server)) *harness {
 		Log: slog.New(slog.NewJSONHandler(h.log, nil)),
 		who: func(*net.UnixConn) (*peer.Requester, error) { return <-h.requesters, nil },
 		ask: h.ask,
+		stayed: func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.stays++
+			h.moved.Broadcast()
+		},
 	}
+	h.moved = sync.NewCond(&h.mu)
 	h.s.loginSigner = func(*peer.Requester) bool { return h.loginSigner.Load() }
 	h.s.policySigner = func(*peer.Requester) bool { return h.policySigner.Load() }
 	for range keys {
@@ -215,13 +227,15 @@ func (c *client) signAsync(key ssh.PublicKey, data []byte) <-chan error {
 }
 
 func (h *harness) next() *asked {
-	h.t.Helper()
-	select {
-	case a := <-h.questions:
-		return a
-	case <-time.After(10 * time.Second):
-		h.t.Fatal("nothing was asked")
-		return nil
+	return <-h.questions
+}
+
+// stayedFor waits until the server has called stayed n times in all.
+func (h *harness) stayedFor(n int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for h.stays < n {
+		h.moved.Wait()
 	}
 }
 
@@ -235,14 +249,7 @@ func (h *harness) nothingAsked() {
 }
 
 func wait(t *testing.T, done <-chan error) error {
-	t.Helper()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("the sign never finished")
-		return nil
-	}
+	return <-done
 }
 
 func allowFor(d time.Duration) answered {
@@ -560,7 +567,7 @@ func TestANewGrantSignsTheWaitingRowsItCovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-coveredRow.withdrawn
-	time.Sleep(100 * time.Millisecond)
+	h.stayedFor(len(stay))
 	for i, a := range stay {
 		select {
 		case <-a.withdrawn:
@@ -576,11 +583,7 @@ func TestHangUpWithdrawsTheRow(t *testing.T) {
 	c.signAsync(h.key(0), userauthData([]byte("sid"), h.key(0), nil))
 	a := h.next()
 	c.c.Close()
-	select {
-	case <-a.withdrawn:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the row stayed after the requester hung up")
-	}
+	<-a.withdrawn
 }
 
 func TestAWarningChainIsAllowOnceWithTheWarningLevel(t *testing.T) {

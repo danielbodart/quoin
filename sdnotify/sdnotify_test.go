@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -31,7 +30,6 @@ func (f *fakeSystemd) next(t *testing.T) (string, []*os.File) {
 	t.Helper()
 	buf := make([]byte, 4096)
 	oob := make([]byte, unix.CmsgSpace(4*16))
-	_ = f.c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, oobn, _, _, err := f.c.ReadMsgUnix(buf, oob)
 	if err != nil {
 		t.Fatal(err)

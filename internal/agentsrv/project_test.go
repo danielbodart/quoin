@@ -95,6 +95,9 @@ type fakeCourier struct {
 	writes   []courier.Request
 	conflict bool
 	notes    []string
+	// noted, when set, is sent each note as it is made: the signer makes
+	// it on a goroutine of its own, the notice staying until dismissed.
+	noted chan string
 }
 
 func (f *fakeCourier) read(_ context.Context, pid int, _ uint64) (*courier.Response, error) {
@@ -122,6 +125,9 @@ func (f *fakeCourier) notify(_ context.Context, _, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.notes = append(f.notes, text)
+	if f.noted != nil {
+		f.noted <- text
+	}
 	return nil
 }
 
@@ -411,7 +417,7 @@ func TestAlwaysIsNotOfferedOverAFileItMayNotWrite(t *testing.T) {
 }
 
 func TestAlwaysWhoseWriteConflictsStillSignsOnceAndSaysSo(t *testing.T) {
-	fc := &fakeCourier{reads: map[int]*courier.Response{}, conflict: true}
+	fc := &fakeCourier{reads: map[int]*courier.Response{}, conflict: true, noted: make(chan string, 1)}
 	h := newHarness(t, 1, withPolicy(fc))
 	fc.reads[100] = &courier.Response{Root: foo}
 	done := h.login(claude(100), h.github, false)
@@ -422,18 +428,8 @@ func TestAlwaysWhoseWriteConflictsStillSignsOnceAndSaysSo(t *testing.T) {
 	if !strings.Contains(h.log.String(), `"outcome":"not saved"`) || !strings.Contains(h.log.String(), "changed since it was read") {
 		t.Errorf("logged %s", h.log)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		fc.mu.Lock()
-		n := len(fc.notes)
-		fc.mu.Unlock()
-		if n == 1 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(fc.notes) != 1 || !strings.Contains(fc.notes[0], "allowed once") {
-		t.Errorf("notes %q", fc.notes)
+	if note := <-fc.noted; !strings.Contains(note, "allowed once") {
+		t.Errorf("noted %q", note)
 	}
 	// Nothing was granted: the next is asked.
 	done = h.login(claude(100), h.github, false)

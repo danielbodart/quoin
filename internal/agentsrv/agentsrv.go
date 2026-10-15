@@ -78,8 +78,12 @@ type Server struct {
 	write        func(ctx context.Context, root, oldDigest string, b, sig []byte) error
 	notify       func(ctx context.Context, user, text string) error
 	inHost       func(*net.UnixConn) error
-	now          func() time.Time
-	layers       *layerCache
+	// stayed, when set, is called each time a waiting row has seen the
+	// grants change and goes on waiting: what a test waits on to know every
+	// row has seen a grant, there being no other sign of it.
+	stayed func()
+	now    func() time.Time
+	layers *layerCache
 }
 
 const maxBinds = 16
@@ -414,12 +418,15 @@ func (c *conn) ask(req *request) verdict {
 		defer c.refusePanic(&got.err)
 		got.a, got.err = c.s.ask(ctx, c.s.User, req.question)
 	}()
-	for {
+	for woken := false; ; woken = true {
 		changed := c.s.Grants.Changed()
 		if req.grantable && c.s.Grants.Use(req.grant) {
 			cancel()
 			c.keep(req, <-answers)
 			return verdict{sign: true, source: "grant"}
+		}
+		if woken && c.s.stayed != nil {
+			c.s.stayed()
 		}
 		select {
 		case got := <-answers:
