@@ -1,7 +1,11 @@
 // Command fakegalley stands in for galley's window on the services socket in
 // the VM tests, answering each question with the next line of a script.
 //
-//	fakegalley -socket PATH -script FILE [-log FILE]
+//	fakegalley -socket PATH -script FILE [-log FILE] [-ready FIFO]
+//
+// Once the socket is bound it says so: READY=1 to systemd when run as a
+// Type=notify unit, and a line written to FIFO when -ready names one, which
+// a test blocks reading. A test never waits for the socket to appear.
 //
 // Script actions, one per question, the last line repeating: `ok <field>…`
 // answers the fields in order, `cancel`, `answer N` presses extra button N,
@@ -25,6 +29,7 @@ import (
 	"sync"
 
 	"github.com/danielbodart/galley/wire"
+	"github.com/danielbodart/quoin/sdnotify"
 	"golang.org/x/sys/unix"
 )
 
@@ -52,6 +57,7 @@ func run() error {
 	socket := flag.String("socket", "", "the services socket to bind")
 	script := flag.String("script", "", "the answers, one action a line")
 	logPath := flag.String("log", "", "where to write one JSON line per question and answer")
+	ready := flag.String("ready", "", "a FIFO to write a line to once the socket is bound")
 	flag.Parse()
 	if *socket == "" || *script == "" {
 		return errors.New("-socket and -script are required")
@@ -79,6 +85,16 @@ func run() error {
 	}
 	if err := os.Chmod(*socket, 0o666); err != nil {
 		return err
+	}
+	if n := sdnotify.FromEnv(); n != nil {
+		if err := n.Ready("listening"); err != nil {
+			return err
+		}
+	}
+	if *ready != "" {
+		if err := os.WriteFile(*ready, []byte("ready\n"), 0); err != nil {
+			return err
+		}
 	}
 	for {
 		c, err := l.Accept()

@@ -50,17 +50,19 @@ in
         cmd = f"systemd-run --wait --pipe --quiet --collect --unit=policy-reader -p User={user} -- ${quoin}/bin/quoin-courier {args} 2>&1"
         return machine.succeed(cmd) if ok else machine.fail(cmd)
 
-    # The courier's lines with this msg, once there are at least n: the
-    # journal takes them in its own time, so a line logged as the reply went
-    # need not be there yet when the reply is.
+    # The courier's lines with this msg, of which there must be at least n.
+    # The courier logs a line before it replies, and the journal takes it in
+    # its own time; --sync returns only once every line written before it is
+    # in the journal.
     def courier_log(msg, n):
-        cmd = "journalctl -u quoin-courier.service -o cat"
-        machine.wait_until_succeeds(f"test $({cmd} | grep -c '\"msg\":\"{msg}\"') -ge {n}")
-        out = machine.succeed(cmd)
-        return [e for e in (json.loads(l) for l in out.splitlines() if l.startswith("{")) if e.get("msg") == msg]
+        out = machine.succeed("journalctl --sync && journalctl -u quoin-courier.service -o cat")
+        got = [e for e in (json.loads(l) for l in out.splitlines() if l.startswith("{")) if e.get("msg") == msg]
+        assert len(got) >= n, got
+        return got
 
-    machine.wait_for_unit("quoin-courier.socket")
-    machine.wait_for_unit("multi-user.target")
+    # Started, not polled for: start joins the job boot queued and returns once it is done.
+    machine.succeed("systemctl start quoin-courier.socket")
+    machine.succeed("systemctl start multi-user.target")
 
     with subtest("a policy signed by stock ssh-keygen verifies, by quoin and by ssh-keygen"):
         machine.succeed("install -d -m 0755 /run/policy-test")
@@ -75,11 +77,9 @@ in
         assert "signed by alice in quoin-policy:~/proj" in out, out
         alice("ssh-keygen -Y verify -f /etc/quoin/allowed_signers -I alice -n 'quoin-policy:~/proj' -s ~/proj/chase.json.sig < ~/proj/chase.json")
 
-    machine.succeed("systemd-run --unit=alice-work --uid=alice -p WorkingDirectory=/home/alice/proj/sub -- sleep 1000")
-    machine.wait_until_succeeds("systemctl is-active alice-work.service")
+    machine.succeed("systemd-run --unit=alice-work --uid=alice -p Type=exec -p WorkingDirectory=/home/alice/proj/sub -- sleep infinity")
     pid = int(machine.succeed("systemctl show -P MainPID alice-work.service"))
-    machine.succeed("systemd-run --unit=alice-idle --uid=alice -p WorkingDirectory=/home/alice/elsewhere -- sleep 1000")
-    machine.wait_until_succeeds("systemctl is-active alice-idle.service")
+    machine.succeed("systemd-run --unit=alice-idle --uid=alice -p Type=exec -p WorkingDirectory=/home/alice/elsewhere -- sleep infinity")
     idle = int(machine.succeed("systemctl show -P MainPID alice-idle.service"))
 
     with subtest("the allowed peer reads the policy above the process's working directory"):

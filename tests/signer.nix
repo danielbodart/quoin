@@ -14,6 +14,7 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   fakegalley = lib.getExe self.packages.${system}.fakegalley;
   agenttamper = self.packages.${system}.agenttamper;
+  vmlib = import ./vmlib.nix { inherit pkgs; };
 
   hostKeys = pkgs.runCommand "signer-test-host-keys" { nativeBuildInputs = [ pkgs.openssh ]; } ''
     mkdir $out
@@ -84,7 +85,11 @@ in
     systemd.user.services.galley.serviceConfig = {
       ExecStart = "${fakegalley} -socket /run/galley-ask/dan.sock -script /run/fakegalley/script -log /run/fakegalley/log";
       Slice = "app.slice";
+      # Ready once its socket is bound, so a restart returns only then.
+      Type = "notify";
     };
+    # Restarted for each new script, at times more than five in ten seconds.
+    systemd.user.services.galley.startLimitIntervalSec = 0;
 
     # A daemon trusted with its own logins, hardened as one would be: the
     # signer knows it by its unit and its main process alone.
@@ -126,7 +131,7 @@ in
       };
     };
 
-    environment.systemPackages = [ pkgs.ssh-tpm-agent pkgs.tpm2-tools pkgs.socat pkgs.bubblewrap pkgs.git agenttamper ];
+    environment.systemPackages = [ pkgs.ssh-tpm-agent pkgs.tpm2-tools pkgs.bubblewrap pkgs.git agenttamper ];
   };
 
   testScript = ''
@@ -144,20 +149,26 @@ in
 
     def galley(*script):
         machine.succeed(f"printf '%s\\n' {' '.join(map(shlex.quote, script))} > /run/fakegalley/script")
-        machine.succeed("rm -f /run/galley-ask/dan.sock")
         machine.succeed("systemctl -M dan@ --user restart galley.service")
-        machine.wait_until_succeeds("test -S /run/galley-ask/dan.sock")
 
     def events(kind):
         out = machine.succeed("cat /run/fakegalley/log")
         return [e for e in map(json.loads, out.splitlines()) if e["event"] == kind]
 
+    # The signer logs a decision before it replies, and --sync returns only
+    # once every line written before it is in the journal.
     def decisions():
-        out = machine.succeed("journalctl -u quoin-signer.service -o cat")
+        out = machine.succeed("journalctl --sync && journalctl -u quoin-signer.service -o cat")
         return [d for d in (json.loads(l) for l in out.splitlines() if l.startswith("{")) if d.get("msg") == "decision"]
 
     def journal_has(text):
-        machine.succeed(f"journalctl -u quoin-signer.service -o cat | grep -F {shlex.quote(text)}")
+        machine.succeed(f"journalctl --sync && journalctl -u quoin-signer.service -o cat | grep -F {shlex.quote(text)}")
+
+    def await_lines(n, text, *follow):
+        machine.succeed(f"${vmlib.await} {n} {shlex.quote(text)} -- {shlex.join(follow)} >/dev/null")
+
+    def wait_events(kind, n):
+        await_lines(n, f'"event":"{kind}"', "tail", "-n", "+1", "-F", "/run/fakegalley/log")
 
     # A long-lived dan process fed lines through a FIFO: the tab types each
     # into bash on its pty, the claude runs each as bash would a script.
@@ -166,28 +177,28 @@ in
         global n
         n += 1
         status = f"/run/{where}/status-{n}"
+        machine.succeed(f"mkfifo -m 0600 {status} && chown dan {status}")
         line = f"{{ {cmd}; }} </dev/null; echo $? > {status}"
         machine.succeed(f"printf '%s\\n' {shlex.quote(line)} > /run/{where}/in")
-        machine.wait_until_succeeds(f"test -s {status}")
         return int(machine.succeed(f"cat {status}"))
 
     def start(where, program):
         machine.succeed(f"install -d -o dan -g users -m 0700 /run/{where} && mkfifo -m 0600 /run/{where}/in && chown dan /run/{where}/in")
         inner = f"exec 3<>/run/{where}/in; exec {program} <&3 >/dev/null"
-        machine.succeed(f"systemd-run -M dan@ --user --unit={where} --quiet {env} -- ${pkgs.runtimeShell} -c {shlex.quote(inner)}")
-        machine.wait_until_succeeds(f"systemctl -M dan@ --user is-active {where}.service")
+        machine.succeed(f"systemd-run -M dan@ --user --unit={where} --quiet -p Type=exec {env} -- ${pkgs.runtimeShell} -c {shlex.quote(inner)}")
 
     def standin(script):
         machine.succeed(f"printf '%s\\n' {shlex.quote(script)} > /run/porter-standin && chmod 0644 /run/porter-standin")
 
     def source_is(src):
-        machine.wait_until_succeeds("journalctl -u quoin-signer.service -o cat | grep '\"msg\":\"decision\"' "
-                                    f"| tail -n1 | grep -qF '\"source\":\"{src}\"'")
+        d = decisions()[-1]
+        assert d["source"] == src, d
 
-    machine.wait_for_unit("quoin-signer.socket")
-    machine.wait_for_unit("sshd.service")
-    machine.wait_for_unit("sshd-beta.service")
-    machine.wait_for_unit("user@1000.service")
+    # Started, not polled for: start joins the job boot queued and returns once it is done.
+    machine.succeed("systemctl start quoin-signer.socket")
+    machine.succeed("systemctl start sshd.service")
+    machine.succeed("systemctl start sshd-beta.service")
+    machine.succeed("systemctl start user@1000.service")
 
     with subtest("with no key files the identities are empty and serve is up"):
         out = machine.fail(as_dan("ssh-add -l 2>&1"))
@@ -292,11 +303,11 @@ in
         closed = len(events("close"))
         asked = len(events("question"))
         run("claude", "ssh -n beta true & echo $! > /run/claude/ssh.pid")
-        machine.wait_until_succeeds(f"test $(grep -c '\"event\":\"question\"' /run/fakegalley/log) -gt {asked}")
+        wait_events("question", asked + 1)
         assert events("question")[-1]["title"] == "ssh to beta"
         machine.succeed("kill $(cat /run/claude/ssh.pid)")
-        machine.wait_until_succeeds(f"test $(grep -c '\"event\":\"close\"' /run/fakegalley/log) -gt {closed}")
-        machine.wait_until_succeeds("journalctl -u quoin-signer.service -o cat | grep -q '\"source\":\"hung up\"'")
+        wait_events("close", closed + 1)
+        await_lines(1, '"source":"hung up"', "journalctl", "-f", "-n", "all", "-o", "cat", "-u", "quoin-signer.service")
 
     with subtest("a login signer's main process signs without a question; a child exec'd in it is asked"):
         galley("answer 0")
@@ -312,9 +323,12 @@ in
         source_is("galley")
 
     with subtest("a cgroup move from dan's user@ session into porter.service is refused"):
-        standin("exec ${shapes}/ssh/porter -n alpha sleep 600")
+        # Said from inside porter.service before the exec, so it has a
+        # process by the time the FIFO is read.
+        machine.succeed("mkfifo -m 0600 /run/porter.ready && chown dan /run/porter.ready")
+        standin("echo >/run/porter.ready; exec ${shapes}/ssh/porter -n alpha sleep infinity")
         machine.succeed("systemctl start --no-block porter.service")
-        machine.wait_until_succeeds("test -n \"$(cat /sys/fs/cgroup/system.slice/porter.service/cgroup.procs)\"")
+        machine.succeed("cat /run/porter.ready && rm /run/porter.ready")
         assert run("claude", "echo $BASHPID > /sys/fs/cgroup/system.slice/porter.service/cgroup.procs") != 0
         assert run("claude", "grep -q user@1000.service /proc/$BASHPID/cgroup") == 0
         machine.succeed("systemctl stop porter.service")
@@ -331,9 +345,10 @@ in
 
     with subtest("a rebound galley socket outside galley.service is nobody, named by its cgroup"):
         galley("answer 0")
-        machine.succeed("systemd-run -M dan@ --user --unit=thief --quiet -- "
-                        "/run/current-system/sw/bin/socat UNIX-LISTEN:/run/galley-ask/dan.sock,fork,unlink-early,perm=0666 'SYSTEM:sleep 10'")
-        machine.wait_until_succeeds("ss -xl | grep -q /run/galley-ask/dan.sock")
+        machine.succeed("printf 'never\\n' > /run/fakegalley/thief && mkfifo /run/fakegalley/thief.ready && chown dan /run/fakegalley/thief.ready")
+        machine.succeed("systemd-run -M dan@ --user --unit=thief --quiet -- ${fakegalley} "
+                        "-socket /run/galley-ask/dan.sock -script /run/fakegalley/thief -ready /run/fakegalley/thief.ready")
+        machine.succeed("cat /run/fakegalley/thief.ready")
         assert run("claude", "ssh -n beta true") != 0
         source_is("nobody")
         d = decisions()[-1]

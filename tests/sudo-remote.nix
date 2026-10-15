@@ -10,6 +10,7 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   fakegalley = lib.getExe self.packages.${system}.fakegalley;
   plugin = self.packages.${system}.quoin-sudo-plugin;
+  vmlib = import ./vmlib.nix { inherit pkgs; };
   password = "hunter2-remote";
 
   keys = pkgs.runCommand "sudo-remote-test-keys" { nativeBuildInputs = [ pkgs.openssh ]; } ''
@@ -44,7 +45,11 @@ let
     systemd.user.services.galley.serviceConfig = {
       ExecStart = "${fakegalley} -socket /run/galley-ask/dan.sock -script /run/fakegalley/script -log /run/fakegalley/log";
       Slice = "app.slice";
+      # Ready once its socket is bound, so a restart returns only then.
+      Type = "notify";
     };
+    # Restarted for each new script, at times more than five in ten seconds.
+    systemd.user.services.galley.startLimitIntervalSec = 0;
   };
 
   sleeper = { wantedBy = [ "multi-user.target" ]; serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity"; };
@@ -102,16 +107,16 @@ in
 
     def galley(m, *script):
         m.succeed(f"printf '%s\\n' {' '.join(map(shlex.quote, script))} > /run/fakegalley/script")
-        m.succeed("rm -f /run/galley-ask/dan.sock")
         m.succeed("systemctl -M dan@ --user restart galley.service")
-        m.wait_until_succeeds("test -S /run/galley-ask/dan.sock")
 
     def events(m, kind):
         out = m.succeed("cat /run/fakegalley/log 2>/dev/null || true")
         return [e for e in map(json.loads, out.splitlines()) if e["event"] == kind]
 
+    # The signer and the gate log a decision before they reply, and --sync
+    # returns only once every line written before it is in the journal.
     def journal(m, unit, msg):
-        out = m.succeed(f"journalctl -u {unit} -o cat --no-pager")
+        out = m.succeed(f"journalctl --sync && journalctl -u {unit} -o cat --no-pager")
         return [d for d in (json.loads(l) for l in out.splitlines() if l.startswith("{")) if d.get("msg") == msg]
 
     def signs():
@@ -123,41 +128,49 @@ in
     def checkins():
         return journal(server, "quoin-sudo.service", "check-in")
 
+    def await_lines(m, n, text, *follow):
+        return m.succeed(f"${vmlib.await} {n} {shlex.quote(text)} -- {shlex.join(follow)}")
+
+    def wait_events(kind, n):
+        await_lines(client, n, f'"event":"{kind}"', "tail", "-n", "+1", "-F", "/run/fakegalley/log")
+
     def fingerprint(name):
         return client.succeed(f"ssh-keygen -lf ${keys}/{name}.pub").split()[1]
 
     # A claude fed lines through a FIFO; each runs to completion, its output
     # and exit status in files.
     start_all()
-    client.wait_for_unit("quoin-signer.socket")
-    client.wait_for_unit("user@1000.service")
-    server.wait_for_unit("sshd.service")
-    server.wait_for_unit("quoin-sudo.socket")
+    # Started, not polled for: start joins the job boot queued and returns once it is done.
+    client.succeed("systemctl start quoin-signer.socket")
+    client.succeed("systemctl start user@1000.service")
+    server.succeed("systemctl start sshd.service")
+    server.succeed("systemctl start quoin-sudo.socket")
     # Started rather than left to the socket: the plugin gives a gate 250 ms
     # to answer, and a cold one on a busy CI runner can take seconds.
     server.succeed("systemctl start quoin-sudo.service")
-    server.wait_for_unit("user@1000.service")
-    second.wait_for_unit("sshd.service")
+    server.succeed("systemctl start user@1000.service")
+    second.succeed("systemctl start sshd.service")
 
     def start(where):
         client.succeed(f"install -d -o dan -g users -m 0700 /run/{where} && mkfifo -m 0600 /run/{where}/in && chown dan /run/{where}/in")
         inner = f"exec 3<>/run/{where}/in; exec ${claude}/bin/claude <&3 >/dev/null 2>&1"
         env = f"-E SSH_AUTH_SOCK=/run/quoin-signer/agent -E PATH={path}"
-        client.succeed(f"systemd-run -M dan@ --user --unit={where} --quiet {env} -- ${pkgs.runtimeShell} -c {shlex.quote(inner)}")
-        client.wait_until_succeeds(f"systemctl -M dan@ --user is-active {where}.service")
+        client.succeed(f"systemd-run -M dan@ --user --unit={where} --quiet -p Type=exec {env} -- ${pkgs.runtimeShell} -c {shlex.quote(inner)}")
 
+    # The status is a FIFO the claude blocks writing until wait reads it, so
+    # every launch is waited for, and the claude runs nothing else meanwhile.
     n = 0
     def launch(cmd):
         global n
         n += 1
         status, out = f"/run/claude/status-{n}", f"/run/claude/out-{n}"
+        client.succeed(f"mkfifo -m 0600 {status} && chown dan {status}")
         line = f"{{ {cmd}; }} </dev/null >{out} 2>&1; echo $? > {status}"
         client.succeed(f"printf '%s\\n' {shlex.quote(line)} > /run/claude/in")
         return status, out
 
     def wait(h):
         status, out = h
-        client.wait_until_succeeds(f"test -s {status}")
         return int(client.succeed(f"cat {status}")), client.succeed(f"cat {out}")
 
     def run(cmd):
@@ -223,7 +236,7 @@ in
 
     with subtest("tty: the server's password is asked and the signer gets no forwarded sign"):
         signed = len(signs())
-        rc, out = run(f"(sleep 4; printf '%s\\n' {pw}) | ssh -A -tt server sudo id -u")
+        rc, out = run(f"${vmlib.ptyrun} --pipe --answer 'password for' {pw} -- ssh -A -tt server sudo id -u")
         assert rc == 0 and "password for dan" in out and "0" in out.split(), repr((rc, out))
         rc, out = run("ssh -A -tt server sudo -n id -u")
         assert rc != 0 and "a password is required" in out, repr((rc, out))
@@ -246,18 +259,22 @@ in
         server.succeed("journalctl -t sudo --no-pager | tail -n 3 | grep -F 'COMMAND=/run/current-system/sw/bin/bash -c whoami'")
 
     with subtest("Relayed socket: a socket from second is refused by the signer, and sudo refuses"):
-        launch("ssh -n -A second 'exec socat TCP-LISTEN:7777,reuseaddr,fork UNIX-CONNECT:\"$SSH_AUTH_SOCK\"' & true")
-        second.wait_for_open_port(7777)
+        # socat says "listening on" once it is bound; the relay is a socket
+        # unit, bound before systemd-run returns.
+        h = launch("ssh -n -A second 'exec socat -d -d TCP-LISTEN:7777,reuseaddr,fork UNIX-CONNECT:\"$SSH_AUTH_SOCK\"' & true")
+        wait(h)
+        await_lines(client, 1, "listening on", "tail", "-n", "+1", "-F", h[1])
         server.succeed("install -d -o dan -g users -m 0700 /run/relay")
-        server.succeed("systemd-run --uid=dan --gid=users --unit=relay socat UNIX-LISTEN:/run/relay/agent,mode=600,fork TCP:second:7777")
-        server.wait_until_succeeds("test -S /run/relay/agent")
+        server.succeed("systemd-run --uid=dan --gid=users --unit=relay "
+                       "--socket-property=ListenStream=/run/relay/agent --socket-property=SocketUser=dan --socket-property=SocketMode=0600 "
+                       "socat ACCEPT-FD:3,fork TCP:second:7777")
         asked, signed = len(events(client, "question")), len(signs())
         rc, out = remote_sudo("SSH_AUTH_SOCK=/run/relay/agent sudo touch /root/relayed", ssh="ssh -a")
         assert rc != 0 and "quoin-sudo: the forwarded agent refused" in out, repr((rc, out))
         server.fail("test -e /root/relayed")
         assert len(events(client, "question")) == asked
-        client.succeed("journalctl -u quoin-signer.service -o cat | grep -F \"not one of the message's host keys\"")
-        server.succeed("systemctl stop relay.service")
+        client.succeed("journalctl --sync && journalctl -u quoin-signer.service -o cat | grep -F \"not one of the message's host keys\"")
+        server.succeed("systemctl stop relay.socket relay.service")
         second.succeed("pkill -u dan socat")
 
     with subtest("Stock agent: a listed file key signs with no question anywhere"):
@@ -280,13 +297,14 @@ in
         galley(client, "never")
         asked, closed = len(events(client, "question")), len(events(client, "close"))
         h = launch("ssh -A server sudo touch /root/hung-up")
-        client.wait_until_succeeds(f"test $(grep -c '\"event\":\"question\"' /run/fakegalley/log) -gt {asked}")
-        server.wait_until_succeeds("pgrep -x sudo")
+        wait_events("question", asked + 1)
+        server.succeed("pgrep -x sudo")
         client.succeed("pkill -u dan -x ssh")
         wait(h)
-        server.wait_until_fails("pgrep -x sudo")
+        # pidwait is 1 when no sudo is left to wait for.
+        server.succeed("pidwait -x sudo || test $? -eq 1; ! pgrep -x sudo")
         server.fail("test -e /root/hung-up")
-        client.wait_until_succeeds(f"test $(grep -c '\"event\":\"close\"' /run/fakegalley/log) -gt {closed}")
+        wait_events("close", closed + 1)
         galley(client, "answer 0")
 
     with subtest("Ids: sudo's ids are the same before the drop and after the restore, and the command runs as root"):

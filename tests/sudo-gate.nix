@@ -17,6 +17,7 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   fakegalley = lib.getExe self.packages.${system}.fakegalley;
   plugin = self.packages.${system}.quoin-sudo-plugin;
+  vmlib = import ./vmlib.nix { inherit pkgs; };
   password = "hunter2-quoin";
 
   clientKey = pkgs.runCommand "sudo-gate-test-client-key" { nativeBuildInputs = [ pkgs.openssh ]; } ''
@@ -80,11 +81,6 @@ let
   # A terminal for a command, as script(1) gives one but read to the end:
   # script lost the whole of a command's output now and then under load,
   # where pty.spawn reads the terminal until it hangs up.
-  ptyrun = pkgs.writeText "ptyrun.py" ''
-    import os, pty, sys
-    sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))
-  '';
-
   sleeper = { wantedBy = [ "multi-user.target" ]; serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity"; };
 in
 {
@@ -135,11 +131,13 @@ in
     systemd.user.services.galley.serviceConfig = {
       ExecStart = "${fakegalley} -socket /run/galley-ask/dan.sock -script /run/fakegalley/script -log /run/fakegalley/log";
       Slice = "app.slice";
+      # Ready once its socket is bound, so a restart returns only then.
+      Type = "notify";
     };
     # Restarted for each new script, at times more than five in ten seconds.
     systemd.user.services.galley.startLimitIntervalSec = 0;
 
-    environment.systemPackages = [ pkgs.socat pkgs.gnutar pkgs.python3 ];
+    environment.systemPackages = [ pkgs.gnutar pkgs.python3 ];
   };
 
   testScript = ''
@@ -157,21 +155,19 @@ in
         return machine.execute(f"setsid -w runuser -u {user} -- {clean_env(user, extra)} bash -c {shlex.quote(cmd)} </dev/null 2>&1")
 
     def tty(cmd, user="dan", feed=pw):
-        inner = f"(sleep 2; printf '%s\\n' {shlex.quote(feed)}) | python3 ${ptyrun} bash -c {shlex.quote(cmd)}"
+        inner = f"${vmlib.ptyrun} --answer 'password for' {shlex.quote(feed)} -- bash -c {shlex.quote(cmd)}"
         return machine.execute(f"runuser -u {user} -- {clean_env(user, 'TERM=dumb')} bash -c {shlex.quote(inner)} 2>&1")
 
     def galley(*script):
         machine.succeed(f"printf '%s\\n' {' '.join(map(shlex.quote, script))} > /run/fakegalley/script")
-        machine.succeed("rm -f /run/galley-ask/dan.sock")
         machine.succeed("systemctl -M dan@ --user restart galley.service")
-        machine.wait_until_succeeds("test -S /run/galley-ask/dan.sock")
 
     def events(kind, log="/run/fakegalley/log"):
         out = machine.succeed(f"cat {log}")
         return [e for e in map(json.loads, out.splitlines()) if e["event"] == kind]
 
     def gate_log():
-        out = machine.succeed("journalctl -u quoin-sudo.service -o cat")
+        out = machine.succeed("journalctl --sync && journalctl -u quoin-sudo.service -o cat")
         return [json.loads(l) for l in out.splitlines() if l.startswith("{")]
 
     def checkins():
@@ -190,27 +186,29 @@ in
     def is_question(q):
         return q["kind"] == "question" and not q["fields"]
 
+    def await_lines(n, text, *follow):
+        machine.succeed(f"${vmlib.await} {n} {shlex.quote(text)} -- {shlex.join(follow)} >/dev/null")
+
     def wait_questions(n):
-        machine.wait_until_succeeds(f"test $(grep -c '\"event\":\"question\"' /run/fakegalley/log) -ge {n}")
+        await_lines(n, '"event":"question"', "tail", "-n", "+1", "-F", "/run/fakegalley/log")
 
     def wait_closes(n):
-        machine.wait_until_succeeds(f"test $(grep -c '\"event\":\"close\"' /run/fakegalley/log) -ge {n}")
+        await_lines(n, '"event":"close"', "tail", "-n", "+1", "-F", "/run/fakegalley/log")
 
     n = 0
     def run(where, cmd):
         global n
         n += 1
         status = f"/run/{where}/status-{n}"
+        machine.succeed(f"mkfifo -m 0600 {status} && chown dan {status}")
         line = f"{{ {cmd}; }} </dev/null; echo $? > {status}"
         machine.succeed(f"printf '%s\\n' {shlex.quote(line)} > /run/{where}/in")
-        machine.wait_until_succeeds(f"test -s {status}")
         return int(machine.succeed(f"cat {status}"))
 
     def start(where):
         machine.succeed(f"install -d -o dan -g users -m 0700 /run/{where} && mkfifo -m 0600 /run/{where}/in && chown dan /run/{where}/in")
         inner = f"exec 3<>/run/{where}/in; exec ${claude}/bin/claude <&3 >/dev/null"
-        machine.succeed(f"systemd-run -M dan@ --user --unit={where} --quiet -E PATH={path} -- ${pkgs.runtimeShell} -c {shlex.quote(inner)}")
-        machine.wait_until_succeeds(f"systemctl -M dan@ --user is-active {where}.service")
+        machine.succeed(f"systemd-run -M dan@ --user --unit={where} --quiet -p Type=exec -E PATH={path} -- ${pkgs.runtimeShell} -c {shlex.quote(inner)}")
 
     def stop_gate():
         machine.succeed("systemctl stop quoin-sudo.socket quoin-sudo.service")
@@ -229,10 +227,11 @@ in
     timing = ${if timing then "True" else "False"}
     gate_not_running = "quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated"
 
-    machine.wait_for_unit("quoin-sudo.socket")
+    # Started, not polled for: start joins the job boot queued and returns once it is done.
+    machine.succeed("systemctl start quoin-sudo.socket")
     start_gate()
-    machine.wait_for_unit("sshd.service")
-    machine.wait_for_unit("user@1000.service")
+    machine.succeed("systemctl start sshd.service")
+    machine.succeed("systemctl start user@1000.service")
     machine.succeed("install -d -o dan -g users -m 0755 /run/fakegalley")
     galley("ok " + pw + " 0")
 
@@ -285,6 +284,7 @@ in
         assert q["table"]["rows"][0][1] == "claude" and q["table"]["summary"] == "claude", q
         err = machine.succeed("cat /run/claude-a/err")
         assert "quoin-sudo: password remembered for this claude until" in err, err
+        machine.succeed("journalctl --sync")
         machine.fail(f"journalctl -o cat | grep -F {pw}")
         assert events("answer")[-1]["fields"][0] == len(pw)
 
@@ -309,10 +309,13 @@ in
         machine.succeed("printf 'answer 0\\n' > /run/fakegalley/thief")
         before = machine.succeed("stat -c %i /run/galley-ask/dan.sock").strip()
         thief = (f"echo $$ > /run/fakegalley/thief.pid && echo $$ > {galley_cgroup}/cgroup.procs && exec ${fakegalley} "
-                 "-socket /run/galley-ask/dan.sock -script /run/fakegalley/thief -log /run/fakegalley/thief.log")
+                 "-socket /run/galley-ask/dan.sock -script /run/fakegalley/thief -log /run/fakegalley/thief.log "
+                 "-ready /run/fakegalley/thief.ready")
         machine.succeed(f"printf '%s\\n' {shlex.quote(thief)} > /run/fakegalley/thief.sh")
+        machine.succeed("mkfifo /run/fakegalley/thief.ready && chown dan /run/fakegalley/thief.ready")
         machine.succeed("systemd-run -M dan@ --user --unit=thief --quiet -- ${pkgs.runtimeShell} /run/fakegalley/thief.sh")
-        machine.wait_until_succeeds(f"test -S /run/galley-ask/dan.sock && test \"$(stat -c %i /run/galley-ask/dan.sock)\" != {before}")
+        machine.succeed("cat /run/fakegalley/thief.ready")
+        assert machine.succeed("stat -c %i /run/galley-ask/dan.sock").strip() != before
         machine.succeed(f"grep -qx \"$(cat /run/fakegalley/thief.pid)\" {galley_cgroup}/cgroup.procs")
         for i in range(2):
             assert run("claude-a", "sudo id -u") != 0
@@ -323,9 +326,10 @@ in
         machine.succeed("kill $(cat /run/fakegalley/thief.pid)")
 
     with subtest("pin: a socket outside galley's cgroup is nobody to ask"):
-        machine.succeed("systemd-run -M dan@ --user --unit=outsider --quiet -- "
-                        "/run/current-system/sw/bin/socat UNIX-LISTEN:/run/galley-ask/dan.sock,fork,unlink-early,perm=0666 'SYSTEM:sleep 10'")
-        machine.wait_until_succeeds("ss -xl | grep -q /run/galley-ask/dan.sock")
+        machine.succeed("printf 'never\\n' > /run/fakegalley/outsider && mkfifo /run/fakegalley/outsider.ready && chown dan /run/fakegalley/outsider.ready")
+        machine.succeed("systemd-run -M dan@ --user --unit=outsider --quiet -- ${fakegalley} "
+                        "-socket /run/galley-ask/dan.sock -script /run/fakegalley/outsider -ready /run/fakegalley/outsider.ready")
+        machine.succeed("cat /run/fakegalley/outsider.ready")
         assert run("claude-a", "sudo id -u 2>/run/claude-a/err") != 0
         assert "no one to ask; use a terminal" in machine.succeed("cat /run/claude-a/err")
         assert decisions()[-1]["source"] == "nobody"
@@ -347,12 +351,8 @@ in
         asked, closed = len(events("question")), len(events("close"))
         machine.succeed(f"setsid -f runuser -u dan -- {clean_env('dan')} sudo id -u </dev/null >/dev/null 2>&1")
         wait_questions(asked + 1)
-        machine.sleep(3)
         machine.succeed("pgrep -x sudo")
-        kill_sudo("TERM")
-        machine.sleep(3)
-        print("sudo after SIGTERM while its dialog is up: " + ("still waiting" if machine.execute("pgrep -x sudo")[0] == 0 else "gone"))
-        machine.execute("pkill -KILL -x sudo")
+        kill_sudo()
         wait_closes(closed + 1)
         assert decisions()[-1]["source"] == "hung up"
 
@@ -478,14 +478,15 @@ in
         assert len(events("question")) == asked + 2
 
     with subtest("a same-parent ticket with the gate stopped in between is refused"):
-        machine.succeed("rm -f /run/fakegalley/first /run/fakegalley/go /run/fakegalley/ticket.out")
-        script = ("sudo id -u; touch /run/fakegalley/first; while ! test -e /run/fakegalley/go; do sleep 0.2; done; "
-                  "sudo id -u; echo rc=$?")
-        machine.succeed(f"setsid -f runuser -u dan -- {clean_env('dan')} bash -c {shlex.quote(script)} </dev/null >/run/fakegalley/ticket.out 2>&1")
-        machine.wait_until_succeeds("test -e /run/fakegalley/first")
+        fifos = " ".join(f"/run/fakegalley/{f}" for f in ["first", "go", "done"])
+        machine.succeed(f"rm -f {fifos} && mkfifo -m 0600 {fifos} && chown dan {fifos}")
+        script = ("{ sudo id -u; echo >/run/fakegalley/first; read _ </run/fakegalley/go; sudo id -u; echo rc=$?; } "
+                  ">/run/fakegalley/ticket.out 2>&1; echo >/run/fakegalley/done")
+        machine.succeed(f"setsid -f runuser -u dan -- {clean_env('dan')} bash -c {shlex.quote(script)} </dev/null >/dev/null 2>&1")
+        machine.succeed("cat /run/fakegalley/first")
         stop_gate()
-        machine.succeed("touch /run/fakegalley/go")
-        machine.wait_until_succeeds("grep -q rc= /run/fakegalley/ticket.out")
+        machine.succeed("echo >/run/fakegalley/go")
+        machine.succeed("cat /run/fakegalley/done")
         out = machine.succeed("cat /run/fakegalley/ticket.out")
         assert "rc=0" not in out and "quoin_audit: unable to log accept event: gate not running" in out, out
         start_gate()
@@ -540,7 +541,6 @@ in
         machine.succeed(f"{ssh} 'setsid -f sh -c \"/run/wrappers/bin/sudo -S id\" </dev/null >/dev/null 2>&1' </dev/null")
         wait_questions(asked + 1)
         assert events("question")[asked]["kind"] == "forms"
-        machine.sleep(2)
         machine.succeed("pgrep -x sudo")
         kill_sudo()
 
