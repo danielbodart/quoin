@@ -54,12 +54,6 @@ jobs:
       - name: Let unprivileged user namespaces hold capabilities
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      # nix flake check --no-build evaluates every output, on every system,
-      # as nix flake check would, and builds nothing: the legs build.
-      - name: Evaluate the flake
-        if: matrix.checks == 'rest'
-        run: nix flake check --no-build
-
       - name: Build ${{ matrix.checks }}
         env:
           LEG: ${{ matrix.checks }}
@@ -76,10 +70,13 @@ jobs:
               grep -qxF "$c" <<<"$all" || { echo "SEPARATE names $c, which is no check" >&2; exit 1; }
             done
             mapfile -t checks < <(grep -vxF -f <(printf '%s\n' "${separate[@]}") <<<"$all")
+            # And what nix flake check built besides the checks.
+            extra=(.#devShells.x86_64-linux.default .#formatter.x86_64-linux)
           else
             checks=("$LEG")
+            extra=()
           fi
-          nix build --no-link --print-build-logs "${checks[@]/#/.#checks.x86_64-linux.}"
+          nix build --no-link --print-build-logs "${checks[@]/#/.#checks.x86_64-linux.}" "${extra[@]}"
 
   # CONTINUOUS RELEASE. Trunk-based: every push to trunk that passes the check
   # above is published, with no manual step and no tag to cut by hand. Gated on
