@@ -24,9 +24,9 @@ jobs:
       # check grows too slow without one.
       #
       # nixos-test and kvm are declared for the VM tests: the signer over a
-      # software TPM, the sudo gate, remote sudo and the courier. KVM is not
-      # available on the standard runner, so a VM test falls back to software
-      # emulation: slower, but it does run.
+      # software TPM, the sudo gate, remote sudo and the courier. The standard
+      # runner has KVM, and install-nix-action opens it to the build users,
+      # but it has four vCPUs for every VM and build the check runs at once.
       #
       # peer's tests make a user namespace to see a process in one told apart
       # from the host's. The Nix build sandbox is itself a user namespace and

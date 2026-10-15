@@ -133,6 +133,9 @@ in
     client.wait_for_unit("user@1000.service")
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("quoin-sudo.socket")
+    # Started rather than left to the socket: the plugin gives a gate 250 ms
+    # to answer, and a cold one on a busy CI runner can take seconds.
+    server.succeed("systemctl start quoin-sudo.service")
     server.wait_for_unit("user@1000.service")
     second.wait_for_unit("sshd.service")
 
@@ -301,7 +304,7 @@ in
         rc, out = remote_sudo("sudo id -u")
         assert rc != 0 and "a terminal is required" in out, repr((rc, out))
         assert all(d["class"] != "remote sudo" for d in signs()[signed:])
-        server.succeed("systemctl start quoin-sudo.socket")
+        server.succeed("systemctl start quoin-sudo.socket quoin-sudo.service")
 
     with subtest("Remote mode off: no remote keys is stock, no check-in"):
         server.succeed("/run/booted-system/specialisation/off/bin/switch-to-configuration test")

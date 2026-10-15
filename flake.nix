@@ -423,9 +423,9 @@
         });
 
       # Tests that hold quoin to times, which checks leaves out: a CI runner
-      # emulating the VM with no KVM is no place to measure anything. Built
-      # by hand on a machine fit to measure, never by nix flake check, which
-      # does not build legacyPackages:
+      # sharing four vCPUs among every VM and build is no place to measure
+      # anything. Built by hand on a machine fit to measure, never by nix
+      # flake check, which does not build legacyPackages:
       #   nix build .#timing.sudo-gate -L
       legacyPackages = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
