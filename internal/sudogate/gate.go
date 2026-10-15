@@ -137,13 +137,25 @@ func (g *Gate) serve(c *net.UnixConn) {
 		g.Log.Warn("refused", "reason", err.Error())
 		return
 	}
-	(&session{g: g, c: c, peer: who}).run()
+	// What is done for the sudo with no person to wait on, the courier's
+	// read, is ended by its hanging up and nothing else.
+	here, gone := context.WithCancel(context.Background())
+	defer gone()
+	stop, err := services.WatchHangUp(c, gone)
+	if err != nil {
+		g.Log.Warn("refused", "reason", "watching for a hang-up: "+err.Error())
+		return
+	}
+	defer stop()
+	(&session{g: g, c: c, peer: who, here: here}).run()
 }
 
 type session struct {
-	g         *Gate
-	c         *net.UnixConn
-	peer      peer.Proc
+	g    *Gate
+	c    *net.UnixConn
+	peer peer.Proc
+	// here is done once the sudo has hung up.
+	here      context.Context
 	remote    bool
 	asked     bool
 	pending   *sudoReq
@@ -400,7 +412,7 @@ func (s *session) approve(req *request) {
 		s.reply(replyNo, "bad request")
 		return
 	}
-	if r, ok := s.g.rule(a); ok {
+	if r, ok := s.g.rule(s.here, a); ok {
 		switch r.Answer {
 		case sudo.Allow:
 			s.record(a, "allow", r.source, r.attrs())

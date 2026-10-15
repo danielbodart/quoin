@@ -465,3 +465,23 @@ func TestTheProjectIsTheUsersProcessNearestSudo(t *testing.T) {
 		t.Errorf("reads %v", p.reads)
 	}
 }
+
+// A courier that never answers holds a sudo only as long as the sudo waits:
+// its hanging up ends the read, with no timer in between.
+func TestAStuckCourierIsLetGoWhenTheSudoHangsUp(t *testing.T) {
+	h, _ := withProject(t, nil)
+	reading, ended := make(chan struct{}), make(chan error, 1)
+	h.g.read = func(ctx context.Context, _ int, _ uint64) (*courier.Response, error) {
+		close(reading)
+		<-ctx.Done()
+		ended <- ctx.Err()
+		return nil, ctx.Err()
+	}
+	c := h.sudo(500)
+	c.send(approval(run("systemctl", "status")))
+	<-reading
+	c.hangUp()
+	if err := <-ended; !errors.Is(err, context.Canceled) {
+		t.Errorf("the read ended with %v", err)
+	}
+}

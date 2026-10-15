@@ -154,7 +154,17 @@ func (s *Server) serve(c *net.UnixConn) {
 		s.Log.Warn("refused", "reason", fmt.Sprintf("peer uid %d is not %s", r.PeerUID, s.User), "chain", r.Chain)
 		return
 	}
-	_ = agent.ServeAgent(&conn{s: s, c: c, r: r}, c)
+	// What is done for the requester with no person to wait on, the
+	// courier's read and write, is ended by its hanging up and nothing else.
+	here, gone := context.WithCancel(context.Background())
+	defer gone()
+	stop, err := services.WatchHangUp(c, gone)
+	if err != nil {
+		s.Log.Warn("refused", "reason", "watching for a hang-up: "+err.Error())
+		return
+	}
+	defer stop()
+	_ = agent.ServeAgent(&conn{s: s, c: c, r: r, here: here}, c)
 }
 
 type conn struct {
@@ -162,6 +172,8 @@ type conn struct {
 	c     *net.UnixConn
 	r     *peer.Requester
 	binds []*bind
+	// here is done once the requester has hung up.
+	here context.Context
 }
 
 type request struct {

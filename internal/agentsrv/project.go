@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/danielbodart/galley/services"
 	"github.com/danielbodart/galley/wire"
@@ -33,8 +32,6 @@ type Policy struct {
 	FileName       string
 	Home           string
 }
-
-const courierTimeout = 3 * time.Second
 
 // layer is a project's policy file as the signer reads it.
 type layer struct {
@@ -117,9 +114,7 @@ func (c *conn) project(req *request) *layer {
 	if c.s.Policy == nil || r.Anchor == nil || r.Cut {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), courierTimeout)
-	defer cancel()
-	resp, err := c.s.read(ctx, r.Anchor.Pid, r.Anchor.Start)
+	resp, err := c.s.read(c.here, r.Anchor.Pid, r.Anchor.Start)
 	if err != nil {
 		c.s.Log.Info("project policy unread", "err", err.Error(), "anchor", r.Anchor)
 		return nil
@@ -340,9 +335,7 @@ func (c *conn) saveAlways(req *request) {
 	attrs := []any{"root", a.l.root, "host", a.name, "old", a.l.digest, "digest", projpolicy.Digest(a.new)}
 	sig, err := signPolicy(a.key, a.l.namespace, a.new)
 	if err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*courierTimeout)
-		err = c.s.write(ctx, a.l.root, a.l.digest, a.new, sig)
-		cancel()
+		err = c.s.write(c.here, a.l.root, a.l.digest, a.new, sig)
 	}
 	if err == nil {
 		c.s.Log.Info("always", append(attrs, "outcome", "written")...)

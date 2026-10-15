@@ -58,9 +58,6 @@ const (
 	// MaxRequest bounds a request, which the server reads no more of, and
 	// twice it a response, which the client reads no more of.
 	MaxRequest = 4 << 20
-	// Deadline is how long the server gives a connection, and the client
-	// one whose context sets none.
-	Deadline = 10 * time.Second
 )
 
 // ErrChanged is a write whose oldDigest is not the file's: it changed since
@@ -69,7 +66,8 @@ const (
 var ErrChanged = errors.New("the policy file changed since it was read")
 
 // Call sends one request to the courier at socket and returns its answer;
-// a Response with Error set is returned as an error.
+// a Response with Error set is returned as an error. It waits as long as
+// the courier takes, until ctx is done, which ends the call where it is.
 func Call(ctx context.Context, socket string, req Request) (*Response, error) {
 	var d net.Dialer
 	c, err := d.DialContext(ctx, "unix", socket)
@@ -77,11 +75,7 @@ func Call(ctx context.Context, socket string, req Request) (*Response, error) {
 		return nil, err
 	}
 	defer c.Close()
-	if dl, ok := ctx.Deadline(); ok {
-		_ = c.SetDeadline(dl)
-	} else {
-		_ = c.SetDeadline(time.Now().Add(Deadline))
-	}
+	defer context.AfterFunc(ctx, func() { _ = c.SetDeadline(time.Unix(1, 0)) })()
 	b, err := json.Marshal(req)
 	if err != nil {
 		return nil, err

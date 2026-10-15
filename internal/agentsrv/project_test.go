@@ -573,3 +573,31 @@ func TestPolicySignSignsAPolicySignersApprovedUnasked(t *testing.T) {
 	}
 	h.nothingAsked()
 }
+
+// A courier that never answers holds a sign only as long as its requester
+// waits: the requester's hanging up ends the read, with no timer in between.
+func TestAStuckCourierIsLetGoWhenTheRequesterHangsUp(t *testing.T) {
+	reading, ended := make(chan struct{}), make(chan error, 1)
+	h := newHarness(t, 1, func(s *Server) {
+		withPolicy(&fakeCourier{})(s)
+		s.read = func(ctx context.Context, _ int, _ uint64) (*courier.Response, error) {
+			close(reading)
+			<-ctx.Done()
+			ended <- ctx.Err()
+			return nil, ctx.Err()
+		}
+	})
+	c := h.dial(claude(100))
+	if err := c.bind(t, h.github, []byte("sid"), false); err != nil {
+		t.Fatal(err)
+	}
+	done := c.signAsync(h.key(0), userauthData([]byte("sid"), h.key(0), nil))
+	<-reading
+	c.c.Close()
+	if err := <-ended; !errors.Is(err, context.Canceled) {
+		t.Errorf("the read ended with %v", err)
+	}
+	if err := wait(t, done); err == nil {
+		t.Error("signed for a requester that hung up")
+	}
+}

@@ -86,7 +86,6 @@ func (s *Server) serve(c *net.UnixConn) {
 			s.Log.Error("connection panicked", "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
 		}
 	}()
-	_ = c.SetDeadline(time.Now().Add(courier.Deadline))
 	unit, pid, err := s.checkPeer(c)
 	if err != nil {
 		s.Log.Warn("refused", "reason", err.Error())

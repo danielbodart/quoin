@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/danielbodart/quoin/courier"
 	"github.com/danielbodart/quoin/internal/galleyask"
@@ -33,8 +32,6 @@ type Policy struct {
 	Home           string
 	UID            int
 }
-
-const courierTimeout = 3 * time.Second
 
 // Where a rule came from, as the journal and the question say.
 const (
@@ -112,12 +109,12 @@ func (a *sudoReq) words() []string {
 
 // rule is the exec rule that decides a, the project's merged over the
 // host's, if one does.
-func (g *Gate) rule(a *sudoReq) (*ruled, bool) {
+func (g *Gate) rule(ctx context.Context, a *sudoReq) (*ruled, bool) {
 	if !a.ruleable() {
 		return nil, false
 	}
 	rules, source, root := g.exec, map[string]bool(nil), ""
-	if p := g.project(a); p != nil && p.rules != nil {
+	if p := g.project(ctx, a); p != nil && p.rules != nil {
 		rules, source, root = p.rules, p.project, p.root
 	}
 	m, ok := rules.Decide(a.runas, a.words())
@@ -136,7 +133,7 @@ func (g *Gate) rule(a *sudoReq) (*ruled, bool) {
 // the one that ran it, or, where that was root's (runuser), the nearest
 // above -- read and verified; nil when there is no policy configured, no
 // process to ask about, no project, or the courier could not say.
-func (g *Gate) project(a *sudoReq) *project {
+func (g *Gate) project(ctx context.Context, a *sudoReq) *project {
 	if g.Policy == nil {
 		return nil
 	}
@@ -145,8 +142,6 @@ func (g *Gate) project(a *sudoReq) *project {
 		return nil
 	}
 	caller := a.r.Chain[i]
-	ctx, cancel := context.WithTimeout(context.Background(), courierTimeout)
-	defer cancel()
 	resp, err := g.read(ctx, caller.Pid, caller.Start)
 	if err != nil {
 		g.Log.Info("project policy unread", "err", err.Error(), "pid", caller.Pid)

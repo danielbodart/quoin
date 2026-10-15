@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"golang.org/x/crypto/ssh/agent"
 )
@@ -105,9 +106,7 @@ func Sign(ctx context.Context, sock string, req Request) ([]byte, error) {
 		return nil, err
 	}
 	defer c.Close()
-	if dl, ok := ctx.Deadline(); ok {
-		_ = c.SetDeadline(dl)
-	}
+	defer context.AfterFunc(ctx, func() { _ = c.SetDeadline(time.Unix(1, 0)) })()
 	out, err := agent.NewClient(c).Extension(Extension, contents)
 	if errors.Is(err, agent.ErrExtensionUnsupported) {
 		return nil, fmt.Errorf("the agent at %s does not sign policies: it is not quoin-signer", sock)
