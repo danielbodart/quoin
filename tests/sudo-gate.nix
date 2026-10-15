@@ -135,6 +135,15 @@ in
     # Restarted for each new script, at times more than five in ten seconds.
     systemd.user.services.galley.startLimitIntervalSec = 0;
 
+    # The waits production keeps on purpose, which here would only be time:
+    # the gate restarts at once, so the crash loop reaches its start limit
+    # without a second between starts, and a wrong password is refused at
+    # once rather than after pam_unix's delay against guessing, by sudo and
+    # by the gate checking a dialog's password.
+    systemd.services.quoin-sudo.serviceConfig.RestartSec = lib.mkForce "0";
+    security.pam.services.sudo.nodelay = true;
+    security.pam.services.quoin-sudo.nodelay = true;
+
     environment.systemPackages = [ pkgs.gnutar pkgs.python3 ];
   };
 
