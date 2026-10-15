@@ -124,14 +124,13 @@ fn open(
 }
 
 fn checkIn(remote: bool) !fd.Sock {
-    const s = try fd.connectUnix(config.gate_path, wire.answer_within);
+    const s = try fd.connectUnix(config.gate_path);
     errdefer s.close();
     if (try s.peerUid() != config.gate_uid) return error.NotTheGate;
     var req: [15]u8 = undefined;
     try s.sendAll(wire.checkIn(&req, remote));
     const r = try readReply(s, .yes_no);
     if (r.reply != .yes) return error.NoCheckIn;
-    try s.unbound();
     return s;
 }
 

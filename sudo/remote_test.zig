@@ -534,7 +534,7 @@ fn signsOrSaysWhy(script: []const u8) !void {
     agent_peer = .{ .listener = try listen(path), .path = path, .replies = &replies, .header = .stream };
     try agent_peer.start();
     defer agent_peer.stop();
-    const s = try fd.connectUnix(path, null);
+    const s = try fd.connectUnix(path);
     defer s.close();
     var kw: Wire = .{};
     kw.int(2);

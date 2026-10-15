@@ -45,7 +45,7 @@ Goals:
 
 **The floor.** Nothing here is ever looser than stock `ssh-tpm-agent` or default sudo. Where flong already stops an attack, these programs do not repeat the defence. Defending against code that already runs as dan on the host is a non-goal (see §2).
 
-**Rules for the code.** No timeouts or deadlines anywhere in our code (signer, gate, plugin, PAM helper, galley). A request is open until it is answered or its requester goes away; the caller owns the timer (sshd's `LoginGraceTime`, Claude Code's Bash timeout, a person's Ctrl-C). A duration the person picks (Allow for 15 minutes) is not a timeout. The one exception is machine to machine: the plugin's 'C' and the helper's 'G' each end within 250 ms from connect to reply (§4.7).
+**Rules for the code.** No timeouts or deadlines anywhere in our code (signer, gate, plugin, PAM helper, galley). A request is open until it is answered or its requester goes away; the caller owns the timer (sshd's `LoginGraceTime`, Claude Code's Bash timeout, a person's Ctrl-C). A duration the person picks (Allow for 15 minutes) is not a timeout. There is no exception: the plugin's 'C' and the helper's 'G' wait on the gate as long as their caller does, and a gate that keeps crashing is ended by systemd's start limit, not a timer of ours (§4.7).
 
 **Approach.** Build it, use it, read the journal, tune. New silent or refuse cases are a code change made after reading the journal.
 
@@ -230,7 +230,7 @@ The gate classifies every command it is sent. A danger command gets the danger l
 ### 4.7 Failure
 
 - **No-tty sudo fails closed** when the gate cannot be reached: the plugin prints "frisket-sudo: gate not running (systemctl status frisket-sudo.socket); sudo in a terminal is not gated", the helper finds no check-in, and `pam_unix` fails with no terminal [spike: one-hop-sudo Q5f, N3c]. A no-tty, local `forUser` sudo with no check-in is refused at `accept()`, whether `open()` gated it or a wrong mode parse left it ungated, so a same-parent sudoers ticket cannot carry it past PAM (decided, not measured; the sudo VM's Ticket case). Terminal sudo and remote sudo outside remote mode never reach the gate, and a remote-mode sudo whose check-in fails is stock, so this cannot lock anyone out. "Gate off" is `sudoGate.enable = false`, which leaves the plugin line out of `sudo.conf`.
-- **The one timeout**: the plugin's 'C' and the helper's 'G' each end within 250 ms from connect to reply, and a miss is a failure as above. No person is waited on there, and failing makes no check-in, so pam_unix runs. A stuck or crash-looping gate thus fails a gated sudo in about half a second (both bounds; the sudo VM measured 512 ms) rather than leaving it waiting, and remote sudo outside remote mode, `-v` and `-l` never connect. Measured in the sudo VM, 'C' from a cold gate (started by socket activation) five times, then 200 warm 'C' and 'G': run alone, cold 14-20 ms, warm 'C' median 0.66 ms, max 1.4 ms, 'G' median 0.9 ms, max 1.6 ms; under `nix flake check` beside the other VM tests, cold 24-68 ms, warm 'C' max 4.2 ms, 'G' max 10.8 ms. 'A', 'V' and every wait on a person stay unbounded: the caller owns that timer.
+- **No timeout on the check-in**: the plugin's 'C' and the helper's 'G' wait for the gate's reply as long as their caller waits for sudo. A gate that is down is a refused connect and one that dies is EOF, each a failure as above at once. A gate that keeps crashing is given up on by systemd: the service's start limit (5 starts in 60 s) fails it, which fails the socket, and closing the socket resets the sudos queued on it and refuses the next, so a no-tty sudo says "gate not running" until `systemctl restart quoin-sudo.socket`. A gate that is stuck holds the sudo until it moves again or the caller gives up, as with everything else. This replaced a 250 ms bound on 'C' and 'G', a guess at how fast a cold gate starts that a busy machine missed, refusing a sudo the gate would have answered. Measured in the sudo VM, 'C' from a cold gate (started by socket activation) five times, then 200 warm 'C' and 'G': run alone, cold 14-20 ms, warm 'C' median 0.66 ms, max 1.4 ms, 'G' median 0.9 ms, max 1.6 ms; under `nix flake check` beside the other VM tests, cold 24-68 ms, warm 'C' max 4.2 ms, 'G' max 10.8 ms.
 - `open()` returns 1 on every path, its allocation and socket errors included: 0 would make sudo unlink the plugin, so nothing vetoes, and -1 is `sudo_fatalx` on every sudo, terminal sudo included (sudo `src/sudo.c:1658-1670`).
 - **Nobody to ask** (galley not running, wrong galley peer): the signer signs at steps 3-7 as usual and refuses at step 8; the gate refuses with "no one to ask; use a terminal".
 - A panic in one request refuses that request and never exits the process.
@@ -420,7 +420,7 @@ One structured record per decision: requester chain, anchor, destination, key, c
 | Local, no tty (`-n`, `-S`, `-A`, `-k cmd` alike) | checks in | exits 0 | asks the gate | §4.5 |
 | Same, a sudoers ticket from the same parent | checks in | not run | asks the gate | The ticket gives nothing [spike: one-hop-sudo Q4a, Q4d] |
 | Same, NOPASSWD | checks in | not run | asks the gate | The dialog [spike: one-hop-sudo T10] |
-| Same, gate unreachable, stuck or crash-looping | prints "gate not running" (no reply in 250 ms included) | exits 1 | refuses | pam_unix fails with no terminal |
+| Same, gate unreachable, stuck or crash-looping | prints "gate not running" (a stuck gate holds it until it moves or the caller gives up) | exits 1 | refuses | pam_unix fails with no terminal |
 
 ### Remote mode
 
@@ -503,7 +503,7 @@ uint32   n; string reason × n                  the danger or warning reason and
 
 - Gated when all hold: `user_info` user is the `user=` option, no `tty=` [spike: sudo-vm], the chain is not remote, and the mode is not `-v` or `-l` [spike: one-hop-sudo S4]. The mode is read from the arguments before `submit_optind` as sudo's `getopt_long` reads them: sudo's short-option string (`src/parse_args.c:115`) so an option's argument (`-gwheel`, `-u lp`) is skipped, a stop at `--`, and any unambiguous prefix of `--validate` or `--list` (`--li`). A missing `user=` leaves every sudo ungated. The mode test is the only part read from arguments, so `accept()` repeats the rest (below): a wrong parse can then only refuse, never run a command unasked.
 - Gated remote, when all hold: `user_info` user is the `user=` option, no `tty=`, the chain is remote, the Plugin line has the `remote` option, `user_env` has a non-empty absolute `SSH_AUTH_SOCK` that fits `sun_path`, and the mode is not `-v` or `-l`. The path is kept for `accept()`. The check-in is as below with an 'm' record; any failure leaves the sudo stock, printing nothing [spike: remote-mode 1].
-- Gated: connect `/run/frisket-sudo/gate.sock` (compiled in, `SOCK_CLOEXEC`), check the peer is uid 0, send 'C', read 'Y', all within 250 ms (`SO_SNDTIMEO` and `SO_RCVTIMEO` set to what is left before each call, and cleared once checked in). Under socket activation the socket's peer is systemd, and `/run/frisket-sudo` is root 0700, so only root can make that socket. Any failure, the 250 ms included, prints the "gate not running" line with `sudo_plugin_printf(SUDO_CONV_ERROR_MSG)`.
+- Gated: connect `/run/frisket-sudo/gate.sock` (compiled in, `SOCK_CLOEXEC`), check the peer is uid 0, send 'C', read 'Y', with no bound in time. Under socket activation the socket's peer is systemd, and `/run/frisket-sudo` is root 0700, so only root can make that socket. Any failure prints the "gate not running" line with `sudo_plugin_printf(SUDO_CONV_ERROR_MSG)`.
 
 `accept()`, for the policy plugin's accept:
 
@@ -526,7 +526,7 @@ uint32   n; string reason × n                  the danger or warning reason and
 
 1. `PAM_TTY` set → exit 1.
 2. `PAM_SERVICE != sudo` or `PAM_USER != <user>` → exit 1.
-3. Connect `gate.sock`, check the peer is uid 0, send 'G' and read the reply, all within 250 ms. 'Y' → exit 0. Anything else, the 250 ms included → exit 1, and pam_unix runs.
+3. Connect `gate.sock`, check the peer is uid 0, send 'G' and read the reply, with no bound in time. 'Y' → exit 0. Anything else → exit 1, and pam_unix runs.
 
 ### The gate on 'C' and 'G'
 
@@ -620,8 +620,8 @@ New patterns are added after reading the journal.
 | `sudo.conf` group-writable or not root's | Every sudo prints "/etc/sudo.conf is group writable"; no check-in, so no-tty sudo fails as stock | The store symlink is root 0444 [spike: SV1, one-hop-sudo Q5d, Q5e] |
 | `sudo.conf` empty or ignored | Stock sudo | No check-in, the helper exits 1 [spike: one-hop-sudo Q5b, N3a] |
 | Gate socket stopped or absent | No-tty sudo says "gate not running" and fails as stock; terminal and remote sudo unaffected | Terminal sudo never reaches the gate [spike: one-hop-sudo Q5f, N3c] |
-| Gate service crash-looping | The socket stays up and connects succeed with no answer, so 'C' and 'G' get no reply within 250 ms: no-tty sudo says "gate not running" and fails as stock in about half a second; terminal, remote, `-v` and `-l` sudo unaffected | `StartLimitIntervalSec=0` keeps the socket up [spike: crosscheck]; no lockout |
-| Gate hangs | Before its 'C' or 'G' reply: as crash-looping. After 'A': sudo waits until its caller gives up | The caller owns the timer on anything a person answers |
+| Gate service crash-looping | The start limit (5 in 60 s) fails the service and so the socket; closing it resets the queued 'C' and 'G' and refuses the next: no-tty sudo says "gate not running" and fails as stock; terminal, remote, `-v` and `-l` sudo unaffected | Terminal sudo never asks the gate, so no lockout; `systemctl restart quoin-sudo.socket` brings it back |
+| Gate hangs | sudo waits until the gate moves again or its caller gives up | The caller owns the timer on anything a person answers |
 | galley not running | 'N' "no one to ask; use a terminal" | Terminal sudo unaffected |
 | sudo killed while its dialog or question is up | The gate sees the connection close and withdraws the row | No late rows |
 | Gate restarts | Check-ins and windows are lost; open sudos get no answer and fail; the next sudo gets the dialog | In memory only |
@@ -743,7 +743,7 @@ Load-bearing lines:
 | Socket | `/run/frisket-sudo/gate.sock`, `SocketUser = sudo-gate`, `SocketMode = 0600`, `DirectoryMode = 0700`, fd name `gate` |
 | ptrace assertion | `kernel.yama.ptrace_scope >= 1`: "the sudo window's galley pin needs ptrace_scope >= 1" |
 
-The gate unit: `User = "sudo-gate"`, `CapabilityBoundingSet = ""`, `ProcSubset = "pid"`, `PrivateDevices`, `ProtectSystem = "strict"`, `ProtectHome`, `RestrictAddressFamilies = [ "AF_UNIX" ]`, `Restart = "always"`, `RestartSec = "1s"`, `StartLimitIntervalSec = 0`.
+The gate unit: `User = "sudo-gate"`, `CapabilityBoundingSet = ""`, `ProcSubset = "pid"`, `PrivateDevices`, `ProtectSystem = "strict"`, `ProtectHome`, `RestrictAddressFamilies = [ "AF_UNIX" ]`, `Restart = "always"`, `RestartSec = "1s"`, `StartLimitBurst = 5`, `StartLimitIntervalSec = 60`.
 
 `/run` is root 0755 and `/run/frisket-sudo` root 0700, so only root can make the gate's socket. The plugin and the helper check its peer is uid 0, which under socket activation is systemd.
 
@@ -880,7 +880,7 @@ Whole-sentence test names, stdlib `testing` plus `rapid`. `mkFrisket` runs `go t
 
 - The gating test and the mode parse: a property over generated arguments (every byte, every option and prefix, `--`, attached and separate option arguments) that the parse agrees with sudo's own `parse_args` built as a test oracle; and that `open()`'s ungated path never panics.
 - `accept()` refuses a no-tty, local `forUser` sudo with no check-in whatever `open()` decided: a mode test forced to say `-v`.
-- A gate that does not answer 'C' or 'G' within 250 ms is no check-in, and a bounded read, send or connect ends once its time is up.
+- A gate whose socket is gone, refuses, or resets a queued 'C' or 'G' is no check-in.
 - `accept()` passes sudo's `command=list` and `command=validate` silently, with no check-in.
 - zwanzig's planted bugs for the plugin's handle kinds; every descriptor closed after `close()`.
 - The remote gating test: no `SSH_AUTH_SOCK`, a relative or over-long one, no `remote` option, a tty → not gated.
@@ -910,7 +910,7 @@ Whole-sentence test names, stdlib `testing` plus `rapid`. `mkFrisket` runs `go t
 `tests/sudo-gate.nix`: no tty via `setsid -w runuser … </dev/null`, a tty via `script -qec`; fakegalley as `galley.service`.
 
 - With a tty, the gate is never contacted and sudo prompts as stock; tty `sudo -n` says "a password is required".
-- **Latency**: 'C' from a cold gate five times, then 200 warm 'C' and 'G', each well inside 250 ms; the test prints them.
+- **Latency**, with timing on: 'C' from a cold gate five times, then 200 warm 'C' and 'G'; the test prints them.
 - **One dialog**: `sudo systemctl restart foo` with fakegalley `ok <pw> 15 minutes`. It runs; fakegalley logged exactly one item, from the `sudo-gate` caller, showing `claude` in the chain's table and the resolved command; stderr says "password remembered … until"; the journal has no password.
 - **`-n`**: `sudo -n id -u` with no tty gets the dialog and runs.
 - **Window**: the next sudo from a new `bash -c` under the same claude gets one question and no password; a different claude gets the dialog.
@@ -927,8 +927,8 @@ Whole-sentence test names, stdlib `testing` plus `rapid`. `mkFrisket` runs `go t
 - **NOPASSWD**: a NOPASSWD rule's command still gets the dialog, and a no-tty `sudo -l` reaches `accept()` and passes with no message and no check-in.
 - **timestamp_type**: a no-tty `sudo id` allowed through fakegalley (`ok <pw> 0`), then a tty `sudo id` in the same VM → prompted.
 - **Gate socket stopped**: no-tty sudo refused with the message; tty and root sudo work.
-- **Stuck**: the gate stopped with SIGSTOP → no-tty sudo says "gate not running" and fails within 2 s; tty sudo works.
-- **Crash loop**: a gate that exits at start keeps the socket active; no-tty sudo says "gate not running" and fails within 2 s, and tty sudo works.
+- **Stuck**: the gate stopped with SIGSTOP → a no-tty sudo waits, tty sudo works meanwhile, and the no-tty sudo is asked and runs once the gate is continued.
+- **Crash loop**: a gate that exits at start hits the start limit, which fails the socket: the no-tty sudo queued on it and the next say "gate not running" and fail, and tty sudo works.
 - **Hang-up**: sudo killed while its dialog is up → fakegalley logs the close; the same for a question.
 - **Never answered**: fakegalley `never` keeps sudo waiting; killing it withdraws the row.
 - **Another user** (bob): no check-in; stock.

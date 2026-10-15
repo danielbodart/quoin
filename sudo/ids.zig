@@ -66,7 +66,7 @@ pub fn connectAs(comptime Sys: type, path: []const u8, uid: u32, gid: u32, group
     const swap = !std.mem.eql(u32, saved.groups, groups);
     if (swap and !Sys.setgroups(groups)) return error.Drop;
     const dropped = Sys.setegid(gid) and Sys.seteuid(uid);
-    const s: ?fd.Sock = if (dropped) fd.connectUnix(path, null) catch null else null;
+    const s: ?fd.Sock = if (dropped) fd.connectUnix(path) catch null else null;
     if (!restore(Sys, saved, swap)) {
         if (s) |x| x.close();
         return error.Restore;

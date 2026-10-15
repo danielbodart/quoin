@@ -1,14 +1,12 @@
 # quoin-sudo as nixosModules.sudo runs it, with fakegalley as dan's
 # galley.service.
 #
-# timing: whether to hold the gate to its times as well -- 'C' from a cold
-# gate inside the plugin's 250 ms, and a no-tty sudo against a stuck or
-# crash-looping gate failing inside 2 s. Off in checks: a time measured on a
-# CI runner, sharing four vCPUs among every VM and build, says more about the
-# runner than about the gate. On in the timing.sudo-gate output, run by hand
-# on a machine fit to measure (nix build .#timing.sudo-gate). The behaviour
-# around the times -- a stuck or crash-looping gate fails the sudo rather than
-# hanging it, and says the gate is not running -- is asserted either way.
+# timing: whether to print how long 'C' and 'G' take, from a cold gate and a
+# warm one. Nothing is held to a time: the plugin waits on the gate as long as
+# its caller does. Off in checks: a time measured on a CI runner, sharing four
+# vCPUs among every VM and build, says more about the runner than about the
+# gate. On in the timing.sudo-gate output, run by hand on a machine fit to
+# measure (nix build .#timing.sudo-gate).
 { self, timing ? false }:
 { lib, hostPkgs, ... }:
 
@@ -213,13 +211,10 @@ in
     def stop_gate():
         machine.succeed("systemctl stop quoin-sudo.socket quoin-sudo.service")
 
-    # Started rather than left to the socket: the plugin gives a gate 250 ms
-    # to answer, and a cold one on a busy CI runner can take seconds, so
-    # a test that is not about a cold gate starts with a warm one.
-    def start_gate(warm=True):
-        machine.succeed("systemctl start quoin-sudo.socket")
-        if warm:
-            machine.succeed("systemctl start quoin-sudo.service")
+    # reset-failed clears the gate's start limit too, so the starts of
+    # earlier subtests never count toward the crash loop's.
+    def start_gate():
+        machine.succeed("systemctl reset-failed quoin-sudo.service quoin-sudo.socket; systemctl start quoin-sudo.socket")
 
     def kill_sudo(signal="KILL"):
         machine.succeed(f"pkill -{signal} -x sudo")
@@ -228,7 +223,6 @@ in
     gate_not_running = "quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated"
 
     # Started, not polled for: start joins the job boot queued and returns once it is done.
-    machine.succeed("systemctl start quoin-sudo.socket")
     start_gate()
     machine.succeed("systemctl start sshd.service")
     machine.succeed("systemctl start user@1000.service")
@@ -236,14 +230,13 @@ in
     galley("ok " + pw + " 0")
 
     if timing:
-        with subtest("C and G answer well inside their 250 ms, from a cold gate too"):
+        with subtest("how long C and G take, from a cold gate and a warm one"):
             cold = []
             for i in range(5):
                 machine.succeed("systemctl stop quoin-sudo.service")
                 cold.append(float(machine.succeed("python3 ${latency} cold")))
             warm = machine.succeed("python3 ${latency} warm").strip()
             print(f"gate latency: cold C {cold} ms; warm {warm}")
-            assert max(cold) < 250, cold
 
     with subtest("sudo's auth stack is the helper, pam_unix, pam_deny"):
         auth = machine.succeed("grep '^auth' /etc/pam.d/sudo").splitlines()
@@ -575,35 +568,44 @@ in
         assert machine.succeed("/run/wrappers/bin/sudo id -u").strip() == "0"
         start_gate()
 
-    def timed_notty(cmd):
-        rc, out = notty(f"s=$(date +%s%N); {cmd}; echo rc=$? ms=$(( ($(date +%s%N) - s) / 1000000 ))")
-        return out, int(out.rsplit("ms=", 1)[1])
+    # A no-tty sudo run in the background, its output in a file and its
+    # status down a FIFO, read by the test once it has done what it may do
+    # while the sudo waits.
+    def notty_bg(name, cmd):
+        status = f"/run/fakegalley/{name}.status"
+        machine.succeed(f"rm -f {status} && mkfifo -m 0600 {status} && chown dan {status}")
+        script = f"{{ {cmd}; }} >/run/fakegalley/{name}.out 2>&1; echo $? >{status}"
+        machine.succeed(f"setsid -f runuser -u dan -- {clean_env('dan')} bash -c {shlex.quote(script)} </dev/null >/dev/null 2>&1")
+        return lambda: (int(machine.succeed(f"cat {status}")), machine.succeed(f"cat /run/fakegalley/{name}.out"))
 
-    with subtest("a stuck gate fails a no-tty sudo fast; tty sudo works"):
+    with subtest("a stuck gate holds a no-tty sudo until it moves again; tty sudo works meanwhile"):
+        galley("ok " + pw + " 0")
+        asked = len(events("question"))
+        machine.succeed("systemctl start quoin-sudo.service")
         machine.succeed("kill -STOP $(systemctl show -P MainPID quoin-sudo.service)")
-        out, ms = timed_notty("sudo id -u")
-        print(f"no-tty sudo against a stuck gate: {ms} ms")
-        assert "rc=0" not in out and gate_not_running in out and (ms < 2000 or not timing), out
+        done = notty_bg("stuck", "sudo id -u")
         rc, out = tty("sudo id -u")
         assert "\n0" in out.replace("\r", ""), out
         machine.succeed("kill -CONT $(systemctl show -P MainPID quoin-sudo.service)")
-        rc, out = notty("sudo id -u")
-        assert rc == 0, out
+        rc, out = done()
+        assert rc == 0 and out.strip().splitlines()[-1] == "0", out
+        assert len(events("question")) == asked + 1
 
-    with subtest("a crash-looping gate keeps the socket up: no-tty sudo fails fast, tty sudo works"):
+    with subtest("a crash-looping gate is given up on: its socket fails, so the sudo queued on it and the next say the gate is not running; tty sudo works"):
         stop_gate()
         machine.succeed("mkdir -p /run/systemd/system/quoin-sudo.service.d && "
                         "printf '[Service]\\nExecStart=\\nExecStart=/run/current-system/sw/bin/false\\n' > /run/systemd/system/quoin-sudo.service.d/crash.conf && "
                         "systemctl daemon-reload")
-        start_gate(warm=False)
-        out, ms = timed_notty("sudo id -u")
-        print(f"no-tty sudo against a crash-looping gate: {ms} ms")
-        assert "rc=0" not in out and gate_not_running in out and (ms < 2000 or not timing), out
-        machine.succeed("systemctl is-active quoin-sudo.socket")
+        start_gate()
+        rc, out = notty("sudo id -u")
+        assert rc != 0 and gate_not_running in out, out
+        machine.succeed("systemctl is-failed quoin-sudo.socket")
+        rc, out = notty("sudo id -u")
+        assert rc != 0 and gate_not_running in out, out
         rc, out = tty("sudo id -u")
         assert "\n0" in out.replace("\r", ""), out
         stop_gate()
-        machine.succeed("rm -r /run/systemd/system/quoin-sudo.service.d && systemctl daemon-reload && systemctl reset-failed quoin-sudo.service")
+        machine.succeed("rm -r /run/systemd/system/quoin-sudo.service.d && systemctl daemon-reload")
         start_gate()
         rc, out = notty("sudo id -u")
         assert rc == 0, out

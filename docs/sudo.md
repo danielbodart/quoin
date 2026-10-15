@@ -140,8 +140,9 @@ sudo: quoin_audit: unable to log accept event: cancelled
 A sudo that is killed withdraws its item; until it runs the command, sudo
 holds SIGTERM, SIGINT, SIGHUP and SIGQUIT, so only SIGKILL does. Nothing
 that waits on you times out: a sudo waits until it is answered or killed.
-The check-in alone is bounded: a gate that does not answer it within
-250 ms is not running.
+The check-in waits too: a gate that is down refuses it at once, and one
+that keeps crashing is given up on by systemd, whose closing the socket
+fails the sudos waiting on it.
 
 ## Rules
 
@@ -303,15 +304,15 @@ the gate has answered, so the gate never sees it.
 ## Recovery
 
 **No-tty sudo says `quoin-sudo: gate not running`.** The gate socket is
-down, or the gate is not answering (crash-looping or stuck); sudo in a
-terminal works as before.
+down, or systemd gave up on a gate that kept crashing; sudo in a terminal
+works as before. A stuck gate does not say this: its sudo waits.
 
 ```
 systemctl status quoin-sudo.socket quoin-sudo.service
 sudo systemctl restart quoin-sudo.socket
 ```
 
-**No-tty sudo hangs.** galley is not answering. Kill the sudo
+**No-tty sudo hangs.** galley or the gate is not answering. Kill the sudo
 (`kill -KILL`), then check `journalctl -u quoin-sudo`.
 
 **`no one to ask; use a terminal`.** galley is not running, or the socket

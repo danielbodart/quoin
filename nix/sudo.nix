@@ -200,7 +200,14 @@ in
       requires = [ "quoin-sudo.socket" ];
       wants = lib.optional policy.courier.enable "quoin-courier.socket";
       after = [ "quoin-sudo.socket" ] ++ lib.optional policy.courier.enable "quoin-courier.socket";
-      startLimitIntervalSec = 0;
+      # A gate that keeps crashing is given up on: the start limit fails the
+      # service, which fails the socket, and systemd's closing it resets the
+      # sudos queued on it and refuses the next, so a no-tty sudo says the
+      # gate is not running rather than waiting on a gate that will not come.
+      # A terminal's sudo never asks the gate; systemctl restart
+      # quoin-sudo.socket brings it back.
+      startLimitBurst = 5;
+      startLimitIntervalSec = 60;
       restartTriggers = [ configFile ];
       serviceConfig = {
         ExecStart = utils.escapeSystemdExecArgs [ gate "serve" "-config" "/etc/quoin/sudo.json" ];

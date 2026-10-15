@@ -9,8 +9,6 @@ pub const version = 2;
 pub const max_request = 1 << 20;
 pub const max_message = 512;
 pub const max_password = 1023;
-/// The one timeout: 'C' and 'G', connect to reply. No person is waited on.
-pub const answer_within = 250 * std.time.ns_per_ms;
 pub const header_len = 10;
 const record_head = 5;
 /// An 'S': a key and a signature, each from one agent frame.

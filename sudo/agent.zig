@@ -238,7 +238,7 @@ fn listedKeys(out: []u8, keys: []const []const u8) []u8 {
 
 fn signWith(replies: []const []const u8, keys: []const u8) !struct { Outcome, *TestAgent } {
     const a = try TestAgent.start("agent-test.sock", replies);
-    const s = try fd.connectUnix("agent-test.sock", null);
+    const s = try fd.connectUnix("agent-test.sock");
     defer s.close();
     return .{ sign(s, keys, "the message", &test_buf), a };
 }
@@ -294,7 +294,7 @@ test "a message too long for an agent frame is refused before it is sent" {
     const ids = testFrame(&ib, identities_answer, &.{ "key-b", "" });
     const a = try TestAgent.start("agent-test.sock", &.{ids});
     defer a.stop();
-    const s = try fd.connectUnix("agent-test.sock", null);
+    const s = try fd.connectUnix("agent-test.sock");
     defer s.close();
     const big = try testing.allocator.alloc(u8, max_frame);
     defer testing.allocator.free(big);

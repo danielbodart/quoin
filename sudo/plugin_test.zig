@@ -209,21 +209,15 @@ test "garbage, a message that is not printable, an 'M' to a local 'A' and a pass
     try testing.expectEqualStrings("quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated", saidLine(0));
 }
 
-test "a gate that does not answer 'C' within 250 ms is not running, and the command is refused" {
-    const l = try listen();
-    defer {
-        std.posix.close(l);
-        std.posix.unlink(gate_path) catch {};
-    }
+test "a gate whose socket systemd no longer listens on is not running, and the command is refused" {
+    std.posix.close(try listen());
+    defer std.posix.unlink(gate_path) catch {};
     const m = me();
     const ui = [_:null]?[*:0]const u8{ m.user, m.uid, "pid=1" };
     const opts = [_:null]?[*:0]const u8{m.option};
     const argv = [_:null]?[*:0]const u8{ "sudo", "id" };
     said_n = 0;
-    var t = try std.time.Timer.start();
     try testing.expectEqual(@as(c_int, 1), open(arr(&ui), arr(&opts), arr(&argv), 1));
-    const took = t.read();
-    try testing.expect(took >= 240 * std.time.ns_per_ms and took < 2 * std.time.ns_per_s);
     try testing.expectEqualStrings("quoin-sudo: gate not running (systemctl status quoin-sudo.socket); sudo in a terminal is not gated", saidLine(0));
     var errstr: [*c]const u8 = null;
     try testing.expectEqual(@as(c_int, 0), accept(&errstr));
