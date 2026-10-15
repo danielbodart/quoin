@@ -22,16 +22,19 @@ func Name(l peer.Link) string {
 	return Clean(l.Comm)
 }
 
-// link is one process the chain shows, and its command laid out.
+// link is one process the chain shows: its pid, its name and its command
+// laid out.
 type link struct {
 	pid   int
+	name  string
 	lines []string
 }
 
-// shown runs from the link the question names (topOf), or the top of the chain, down to the leaf,
-// leaving out the shells between them: the top by its name, the rest by
-// their commands, laid out by Command, each folded against the one below
-// it (fold).
+// shown runs from the link the question names (topOf), or the top of the
+// chain, down to the leaf, leaving out the shells between them: the top by
+// its name alone, the rest by their names and commands, each folded against
+// the one below it (fold) and laid out by Command, or, for Claude Code's
+// Bash tool, the command the tool runs, laid out as a script (bashTool).
 func shown(r *peer.Requester) []link {
 	top := topOf(r)
 	var pids []int
@@ -52,14 +55,18 @@ func shown(r *peer.Requester) []link {
 	out := make([]link, len(pids))
 	for i := range pids {
 		if i == 0 {
-			out[0] = link{pids[0], []string{Name(r.Chain[top])}}
+			out[0] = link{pid: pids[0], name: Name(r.Chain[top])}
 			continue
 		}
 		argv := argvs[i]
 		if i+1 < len(argvs) {
 			argv = fold(argv, argvs[i+1])
 		}
-		out[i] = link{pids[i], Command(argv, Width)}
+		lines := Command(argv, Width)
+		if body, ok := bashTool(argv); ok {
+			lines = Script(body, Width)
+		}
+		out[i] = link{pids[i], Clean(filepath.Base(argv[0])), lines}
 	}
 	return out
 }
@@ -109,12 +116,12 @@ func fold(argv, next []string) []string {
 	return argv
 }
 
-// ChainRows is the chain as a table's rows, top first: each process's pid
-// and its command's lines.
+// ChainRows is the chain as a table's rows, top first: each process's pid,
+// its name and its command's lines.
 func ChainRows(r *peer.Requester) [][]string {
 	var rows [][]string
 	for _, l := range shown(r) {
-		rows = append(rows, []string{strconv.Itoa(l.pid), strings.Join(l.lines, "\n")})
+		rows = append(rows, []string{strconv.Itoa(l.pid), l.name, strings.Join(l.lines, "\n")})
 	}
 	return rows
 }
@@ -135,8 +142,8 @@ func Chain(r *peer.Requester) *ChainTable {
 const maxSummary = 300
 
 // Summary is the chain in a line: the name of the link topOf finds, and
-// what the leaf runs -- a shell's script, or the script inside Claude
-// Code's eval, on one line -- or that link's command when it is the leaf.
+// what the leaf runs -- a shell's script, or the command Claude Code's
+// Bash tool runs, on one line -- or that link's command when it is the leaf.
 // Where the leaf is git's signing program, shown through, the line is what
 // its parent runs, unless that is a shell: git commit, not ssh-keygen's
 // buffer file.
@@ -168,11 +175,8 @@ func leafLine(l peer.Link) string {
 	w := wrapped(argv)
 	if s := scriptArg(argv[w:]); s > 0 {
 		script := argv[w+s]
-		for _, seg := range split(script) {
-			if _, body, _, ok := evalScript(seg); ok {
-				script = body
-				break
-			}
+		if body, ok := bashTool(argv[w:]); ok {
+			script = body
 		}
 		return Clean(strings.Join(strings.Fields(script), " "))
 	}

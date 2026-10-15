@@ -127,7 +127,9 @@ the one checked. `sudo -n` gets the dialog too.
 - **Warning**: a process chain cut short, or launched straight from
   `systemd --user`. No time field.
 - Variables outside the allowlist (`HOME`, `PATH`, `TERM`, `LANG`,
-  `LC_*`, `DISPLAY`, `SUDO_*`, …) are shown as lines.
+  `LC_*`, `DISPLAY`, `SUDO_*`, `LS_COLORS`, `XDG_CURRENT_DESKTOP`, …)
+  are shown in a block of their own under the command, each cut to 80
+  characters, and keep the request from any exec rule.
 
 A refusal is sudo's own line:
 
@@ -289,7 +291,10 @@ SUDO_GID=100
 SUDO_HOME=/home/dan
 ```
 
-All of it is on the allowlist, so a plain sudo shows no variable lines;
+All of it is on the allowlist, so a plain sudo shows no variable lines.
+A sudo from a desktop session also has `LS_COLORS`, `COLORS` and
+`XDG_CURRENT_DESKTOP`, from sudo's own `env_keep`; they are on the
+allowlist too, since they say how to colour and what desktop it is;
 `FOO` arrives only with `--preserve-env=FOO`, and is shown. PAM's session
 then adds root's NixOS environment (`GTK_PATH`, `INFOPATH`,
 `LIBEXEC_PATH`, `LOCALE_ARCHIVE`, `NIX_PATH`, `TERMINFO_DIRS`, …) after

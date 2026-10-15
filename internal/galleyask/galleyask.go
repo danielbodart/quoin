@@ -80,7 +80,7 @@ func item(name string, q Question) *wire.Item {
 		it.Text += "\n" + q.AlwaysText
 	}
 	if q.Chain != nil {
-		it.Table = &wire.Table{Columns: []string{"PID", "Process"}, Rows: q.Chain.Rows, Monospace: []int{1}, Summary: q.Chain.Summary}
+		it.Table = &wire.Table{Columns: []string{"PID", "Process", "Command"}, Rows: q.Chain.Rows, Monospace: []int{2}, Summary: q.Chain.Summary}
 	}
 	units := wire.Field{Kind: wire.FieldCombo, Values: []string{"minutes", "hours"}}
 	switch {

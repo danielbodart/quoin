@@ -10,11 +10,17 @@ import (
 	"github.com/danielbodart/quoin/internal/galleyask"
 )
 
+// envAllowed are the variables a command may be run with and still be
+// shown no environment and decided by a rule. LS_COLORS, COLORS and
+// XDG_CURRENT_DESKTOP are in sudo's own env_keep, so every sudo from a
+// desktop has them; they say how to colour and what desktop it is, nothing
+// a program does as root.
 var envAllowed = map[string]bool{
 	"HOME": true, "LOGNAME": true, "USER": true, "SHELL": true, "MAIL": true, "TERM": true,
 	"TERMINFO": true, "TERMINFO_DIRS": true, "LANG": true, "PATH": true, "DISPLAY": true,
 	"XAUTHORITY": true, "COLORTERM": true, "SUDO_USER": true, "SUDO_UID": true, "SUDO_GID": true,
 	"SUDO_COMMAND": true, "SUDO_HOME": true,
+	"LS_COLORS": true, "COLORS": true, "XDG_CURRENT_DESKTOP": true,
 }
 
 const unreadable = "a shell command the gate cannot read"

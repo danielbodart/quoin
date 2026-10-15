@@ -782,9 +782,9 @@ func TestTheQuestionNamesTheRequesterOnceAndLeavesOutTheShells(t *testing.T) {
 	a := h.next()
 	var procs []string
 	for _, r := range a.q.Chain.Rows {
-		procs = append(procs, r[1])
+		procs = append(procs, r[1]+": "+r[2])
 	}
-	if !slices.Equal(procs, []string{"claude", "git push", "ssh git@github.com"}) || a.q.Chain.Summary != "claude ← ssh git@github.com" ||
+	if !slices.Equal(procs, []string{"claude: ", "git: git push", "ssh: ssh git@github.com"}) || a.q.Chain.Summary != "claude ← ssh git@github.com" ||
 		!strings.HasPrefix(a.q.Text, "key ") || !strings.HasSuffix(a.q.Text, "\nA grant covers github.com from claude (pid 100).") {
 		t.Errorf("asked %q %+v", a.q.Text, a.q.Chain)
 	}

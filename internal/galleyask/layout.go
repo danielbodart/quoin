@@ -2,13 +2,15 @@ package galleyask
 
 import (
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
 
 // Width is the characters a command is laid out to before it is broken
 // across lines.
-const Width = 64
+const Width = 80
 
 // indent is what a shell script's lines, and a broken line's continuations,
 // start with.
@@ -18,13 +20,14 @@ const indent = "    "
 // width is a line, the arguments joined by spaces as before. A longer one
 // first puts a shell's script, the argument a -c names, on lines of its
 // own, split at the script's control operators that no quote, $( ), ( ),
-// { }, backquote or comment holds: &&, || and | start the line after them,
-// ; ends the line before it, a newline is a line break. A segment that is
-// eval of one single-quoted script, as Claude Code's Bash tool runs each
-// command, is laid out the same way inside its quotes. Any line still wider
-// than width is then broken at spaces, quotes kept whole where they can be,
-// each line but the last ending with a backslash; a word longer than a
-// line is left whole.
+// { }, backquote or comment holds: &&, ||, | and ; end the line they
+// follow, as a script written across lines has them, and a newline is a
+// line break; the commands a pipe joins after its first are indented under
+// it. A segment that is eval of one single-quoted script, as Claude Code's
+// Bash tool runs each command, is laid out the same way inside its quotes.
+// Any line still wider than width is then broken at spaces, quotes kept
+// whole where they can be, each line but the last ending with a backslash;
+// a word longer than a line is left whole.
 func Command(argv []string, width int) []string {
 	if len(argv) == 0 {
 		return nil
@@ -56,17 +59,34 @@ func Command(argv []string, width int) []string {
 	return out
 }
 
-// scriptLines is script's segments, each a line starting with ind, an eval
-// too long for its line opened onto lines of its own.
+// Script lays out a shell script for reading, as Command lays out a -c's,
+// its lines starting at the margin.
+func Script(script string, width int) []string {
+	var out []string
+	for _, l := range scriptLines(script, "", width) {
+		out = append(out, Wrap(l, width)...)
+	}
+	return out
+}
+
+// scriptLines is script's segments, each a line starting with ind, a
+// pipeline's commands after its first indented once more, and an eval too
+// long for its line opened onto lines of its own.
 func scriptLines(script, ind string, width int) []string {
 	var lines []string
+	piped := false
 	for _, seg := range split(script) {
-		line := ind + Clean(seg)
+		in := ind
+		if piped {
+			in += indent
+		}
+		piped = seg.op == "|" || seg.op == "|&"
+		line := in + Clean(seg.line())
 		if utf8.RuneCountInString(line) > width {
-			if lead, body, rest, ok := evalScript(seg); ok {
-				lines = append(lines, ind+Clean(strings.TrimSpace(lead+" eval '")))
-				lines = append(lines, scriptLines(body, ind+indent, width)...)
-				lines = append(lines, ind+Clean(strings.TrimSpace("'"+rest)))
+			if body, rest, ok := evalScript(seg.text); ok {
+				lines = append(lines, in+"eval '")
+				lines = append(lines, scriptLines(body, in+indent, width)...)
+				lines = append(lines, in+Clean(segment{"'" + rest, seg.op}.line()))
 				continue
 			}
 		}
@@ -75,25 +95,94 @@ func scriptLines(script, ind string, width int) []string {
 	return lines
 }
 
-// evalScript reads seg as [operator] eval WORD [rest], where WORD is one
+// evalScript reads a segment's text as eval WORD [rest], where WORD is one
 // shell word of quoted and escaped pieces, as Claude Code writes it, whose
 // value is the script.
-func evalScript(seg string) (lead, body, rest string, ok bool) {
-	for _, op := range []string{"&&", "||", "|&", "|"} {
-		if strings.HasPrefix(seg, op+" ") {
-			lead, seg = op, strings.TrimLeft(seg[len(op):], " ")
-			break
+func evalScript(text string) (body, rest string, ok bool) {
+	if !strings.HasPrefix(text, "eval '") {
+		return "", "", false
+	}
+	return shellWord(text[len("eval "):])
+}
+
+// The pieces of Claude Code's Bash tool around the command it evals: the
+// commands it runs first, each followed by || true, and the one after.
+var (
+	snapshot = regexp.MustCompile(`^source (/[A-Za-z0-9._/-]*/\.claude/shell-snapshots/snapshot-(?:bash|zsh)-[0-9]+-[a-z0-9]+\.sh) 2>/dev/null$`)
+	unalias  = regexp.MustCompile(`^\{ \\builtin unalias -- '([A-Za-z_][A-Za-z0-9_]*)'; \\builtin unset -f -- '([A-Za-z_][A-Za-z0-9_]*)'; \} >/dev/null 2>&1$`)
+	cwdFile  = regexp.MustCompile(`^pwd -P >\| /tmp/claude-[0-9a-f]+-cwd$`)
+)
+
+// bashTool is the command Claude Code's Bash tool runs in argv, when argv is
+// exactly the tool's wrapper around it: a shell from a root-owned
+// directory, given -c (and -l) and one script, which is source of a shell
+// snapshot, shopt -u extglob and the unalias of one name, any of them and
+// each || true, then && eval of the command < /dev/null, then, if it is
+// there, && pwd -P into Claude Code's cwd file. Anything else, a byte
+// different included, is not the tool's, so nothing can hide in what the
+// table leaves out.
+func bashTool(argv []string) (string, bool) {
+	if len(argv) < 3 || !systemShell(argv[0]) {
+		return "", false
+	}
+	for _, a := range argv[1 : len(argv)-1] {
+		if a != "-c" && a != "-l" {
+			return "", false
 		}
 	}
-	if !strings.HasPrefix(seg, "eval '") {
-		return "", "", "", false
+	if !slices.Contains(argv[1:len(argv)-1], "-c") {
+		return "", false
 	}
-	body, rest, ok = shellWord(seg[len("eval "):])
-	if !ok {
-		return "", "", "", false
+	segs := split(argv[len(argv)-1])
+	i := 0
+	for i+1 < len(segs) && segs[i].op == "||" && segs[i+1] == (segment{"true", "&&"}) && harness(segs[i].text) {
+		i += 2
 	}
-	return lead, body, rest, true
+	if i >= len(segs) {
+		return "", false
+	}
+	body, rest, ok := evalScript(segs[i].text)
+	if !ok || (rest != " < /dev/null" && rest != ` \< /dev/null`) {
+		return "", false
+	}
+	switch {
+	case i == len(segs)-1 && segs[i].op == "":
+	case i == len(segs)-2 && segs[i].op == "&&" && segs[i+1].op == "" && cwdFile.MatchString(segs[i+1].text):
+	default:
+		return "", false
+	}
+	return body, true
 }
+
+// harness is whether text is one of the commands the Bash tool runs before
+// the command it evals.
+func harness(text string) bool {
+	if m := snapshot.FindStringSubmatch(text); m != nil {
+		return filepath.Clean(m[1]) == m[1]
+	}
+	if m := unalias.FindStringSubmatch(text); m != nil {
+		return m[1] == m[2]
+	}
+	return text == "shopt -u extglob 2>/dev/null"
+}
+
+// systemShell is whether program is bash or zsh from a directory only root
+// can write to.
+func systemShell(program string) bool {
+	switch filepath.Base(program) {
+	case "bash", "zsh":
+	default:
+		return false
+	}
+	dir := filepath.Dir(program)
+	switch dir {
+	case "/run/current-system/sw/bin", "/bin", "/usr/bin":
+		return true
+	}
+	return storeBin.MatchString(dir)
+}
+
+var storeBin = regexp.MustCompile(`^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+/bin$`)
 
 // shellWord reads the shell word s starts with: single-quoted pieces, double-
 // quoted pieces with nothing in them to expand, and backslash escapes,
@@ -217,29 +306,41 @@ func scriptArg(argv []string) int {
 }
 
 // Split is a shell script's lines at its top-level control operators, each
-// cleaned and trimmed, empty ones dropped. && || and | (and |&) lead the
-// segment after them; ; ends the one before it; a newline only breaks.
-// Operators inside quotes, $( ), ( ), ` ` and comments stay where they are,
-// as does the | of a >| redirection.
+// cleaned and trimmed, empty ones dropped. && || | (and |&) and ; end the
+// line before them; a newline only breaks. Operators inside quotes, $( ),
+// ( ), ` ` and comments stay where they are, as does the | of a >|
+// redirection.
 func Split(script string) []string {
-	segs := split(script)
-	for i, s := range segs {
-		segs[i] = Clean(s)
+	var lines []string
+	for _, seg := range split(script) {
+		lines = append(lines, Clean(seg.line()))
 	}
-	return segs
+	return lines
 }
 
-func split(script string) []string {
-	var segs []string
+// segment is one of a script's top-level commands, trimmed, and the control
+// operator after it: &&, ||, |, |&, ; or none.
+type segment struct{ text, op string }
+
+// line is the segment as a line of the script, its operator ending it.
+func (s segment) line() string {
+	switch {
+	case s.op == "":
+		return s.text
+	case s.op == ";" || s.text == "":
+		return s.text + s.op
+	}
+	return s.text + " " + s.op
+}
+
+func split(script string) []segment {
+	var segs []segment
 	var cur strings.Builder
-	lead := ""
-	flush := func(tail string) {
-		seg := strings.TrimSpace(cur.String())
+	flush := func(op string) {
+		text := strings.TrimSpace(cur.String())
 		cur.Reset()
-		if seg != "" || tail != "" {
-			seg = strings.TrimSpace(lead + " " + seg)
-			segs = append(segs, seg+tail)
-			lead = ""
+		if text != "" || op != "" {
+			segs = append(segs, segment{text, op})
 		}
 	}
 	var quote byte // '\'', '"' or '`'
@@ -303,31 +404,25 @@ func split(script string) []string {
 			flush(";")
 			continue
 		case ch == '&' && i+1 < len(script) && script[i+1] == '&':
-			flush("")
-			lead = "&&"
+			flush("&&")
 			i++
 			continue
 		case ch == '|' && i+1 < len(script) && script[i+1] == '|':
-			flush("")
-			lead = "||"
+			flush("||")
 			i++
 			continue
 		case ch == '|' && (cur.Len() == 0 || lastByte(&cur) != '>'):
-			flush("")
-			lead = "|"
+			op := "|"
 			if i+1 < len(script) && script[i+1] == '&' {
-				lead = "|&"
+				op = "|&"
 				i++
 			}
+			flush(op)
 			continue
 		}
 		cur.WriteByte(ch)
 	}
 	flush("")
-	if lead != "" {
-		// A script ending in an operator keeps it.
-		segs = append(segs, lead)
-	}
 	return segs
 }
 

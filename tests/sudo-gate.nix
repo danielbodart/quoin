@@ -409,7 +409,7 @@ in
         asked = len(events("question"))
         notty("sudo --preserve-env=FOO id -u", extra="FOO=bar")
         q = events("question")[asked]
-        assert q["level"] == "normal" and any(l.startswith("FOO=") for l in q["text"].split("\n")), q
+        assert q["level"] == "normal" and q["text"].endswith("\n\nRun with these variables as well:\n    FOO=bar"), q
 
     with subtest("exec rules: allow runs unasked, refuse refuses, ask asks with no password; danger is still asked"):
         machine.succeed("${lib.getExe' self.packages.${system}.quoin "quoin-sudo"} check /etc/quoin/sudo.json")

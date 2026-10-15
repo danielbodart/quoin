@@ -693,7 +693,7 @@ func TestTheDialogShowsTheResolvedCommandAndTheChainInItsTable(t *testing.T) {
 	c := h.sudo(500)
 	c.send(approval(restart(claude(100), "foo")))
 	a := h.next()
-	rows := [][]string{{"100", "claude"}, {"101", "bash -c sudo x"}}
+	rows := [][]string{{"100", "claude", ""}, {"101", "bash", "bash -c sudo x"}}
 	if a.q.Title != "sudo systemctl restart foo" || a.q.Text != "/run/current-system/sw/bin/systemctl restart foo" ||
 		!reflect.DeepEqual(a.q.Chain.Rows, rows) || a.q.Chain.Summary != "claude ← sudo x" {
 		t.Errorf("got %q %q %+v", a.q.Title, a.q.Text, a.q.Chain)
@@ -860,10 +860,11 @@ func TestALinksCmdlineHasNoTrailingNulAndItsCommAtMost64Bytes(t *testing.T) {
 	}
 }
 
-func TestEnvironmentVariablesAreTextLines(t *testing.T) {
+func TestEnvironmentVariablesAreABlockOfTheirOwnUnderTheCommand(t *testing.T) {
 	h := newHarness(t)
 	cmd := restart(claude(100), "foo")
-	cmd.envp = []string{"HOME=/root", "PATH=/bin", "LC_ALL=C", "SUDO_USER=dan", "TERM=xterm", "LESSOPEN=|x %s", "LD_PRELOAD=/tmp/x.so", "FOO=" + strings.Repeat("y", 2000)}
+	cmd.envp = []string{"HOME=/root", "PATH=/bin", "LC_ALL=C", "SUDO_USER=dan", "TERM=xterm", "LESSOPEN=|x %s",
+		"LS_COLORS=rs=0:di=01;34", "XDG_CURRENT_DESKTOP=GNOME", "LD_PRELOAD=/tmp/x.so", "FOO=" + strings.Repeat("y", 2000)}
 	a := h.describe(cmd)
 	if len(a.env) != 3 || a.env[0] != "LESSOPEN=|x %s" || a.env[1] != "LD_PRELOAD=/tmp/x.so" ||
 		!strings.HasPrefix(a.env[2], "FOO=y") || len(a.env[2]) != 1000 {
@@ -872,8 +873,14 @@ func TestEnvironmentVariablesAreTextLines(t *testing.T) {
 	if len(a.danger) != 0 {
 		t.Errorf("danger %q", a.danger)
 	}
-	if q := a.question(false, false); !strings.Contains(q.Text, "\nLESSOPEN=|x %s\nLD_PRELOAD=/tmp/x.so\nFOO=") || q.Level != "normal" {
+	want := "\n\nRun with these variables as well:\n    LESSOPEN=|x %s\n    LD_PRELOAD=/tmp/x.so\n    FOO=" +
+		strings.Repeat("y", galleyask.Width-5) + "…"
+	if q := a.question(false, false); !strings.HasSuffix(q.Text, want) || q.Level != "normal" {
 		t.Errorf("text %q", q.Text)
+	}
+	cmd.envp = []string{"HOME=/root", "LS_COLORS=rs=0:di=01;34", "COLORS=/etc/DIR_COLORS", "XDG_CURRENT_DESKTOP=GNOME"}
+	if a := h.describe(cmd); len(a.env) != 0 || strings.Contains(a.question(false, false).Text, "variables") {
+		t.Errorf("got %q", a.env)
 	}
 }
 

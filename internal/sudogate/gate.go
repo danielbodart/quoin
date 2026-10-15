@@ -363,11 +363,25 @@ func (a *sudoReq) question(inWindow, wrong bool) galleyask.Question {
 		lines = append(lines, "")
 	}
 	lines = append(lines, a.command...)
-	lines = append(lines, a.env...)
+	if len(a.env) > 0 {
+		lines = append(lines, "", "Run with these variables as well:")
+		for _, e := range a.env {
+			lines = append(lines, "    "+shortVar(e))
+		}
+	}
 	return galleyask.Question{
 		Title: a.title, Text: strings.Join(lines, "\n"), Level: level,
 		Password: !inWindow, Grantable: !inWindow && a.grantable(), Allow: "Allow", Chain: galleyask.Chain(a.r),
 	}
+}
+
+// shortVar is a variable's line cut to galleyask.Width characters: enough
+// to see what it is and that it is there, more of it in the log.
+func shortVar(e string) string {
+	if r := []rune(e); len(r) > galleyask.Width {
+		return string(r[:galleyask.Width-1]) + "…"
+	}
+	return e
 }
 
 // window is the galley process a's claude's window is pinned to, or nil

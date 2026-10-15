@@ -18,14 +18,15 @@ func TestSplitPutsEachTopLevelSegmentOnALineOfItsOwn(t *testing.T) {
 		script string
 		want   []string
 	}{
-		{"a && b || c | d; e", []string{"a", "&& b", "|| c", "| d;", "e"}},
+		{"a && b || c | d; e", []string{"a &&", "b ||", "c |", "d;", "e"}},
 		{"a\nb\n\nc", []string{"a", "b", "c"}},
-		{"make 2>&1 |& tee log", []string{"make 2>&1", "|& tee log"}},
-		{"pwd -P >| /tmp/cwd && x", []string{"pwd -P >| /tmp/cwd", "&& x"}},
+		{"make 2>&1 |& tee log", []string{"make 2>&1 |&", "tee log"}},
+		{"pwd -P >| /tmp/cwd && x", []string{"pwd -P >| /tmp/cwd &&", "x"}},
 		{"case x in a) y;; esac", []string{"case x in a) y;; esac"}},
-		{"a &&", []string{"a", "&&"}},
-		{"a &&\n  b", []string{"a", "&& b"}},
-		{"a \\\n  && b", []string{"a", "&& b"}},
+		{"a &&", []string{"a &&"}},
+		{"&& b", []string{"&&", "b"}},
+		{"a &&\n  b", []string{"a &&", "b"}},
+		{"a \\\n  && b", []string{"a &&", "b"}},
 	} {
 		if got := Split(c.script); !slices.Equal(got, c.want) {
 			t.Errorf("%q: got %q", c.script, got)
@@ -38,14 +39,14 @@ func TestSplitLeavesOperatorsInsideQuotesSubshellsAndComments(t *testing.T) {
 		script string
 		want   []string
 	}{
-		{`echo 'a && b; c | d' && e`, []string{`echo 'a && b; c | d'`, "&& e"}},
+		{`echo 'a && b; c | d' && e`, []string{`echo 'a && b; c | d' &&`, "e"}},
 		{`echo "a && \"b || c\"" ; e`, []string{`echo "a && \"b || c\"";`, "e"}},
-		{`echo a\&\&b && c`, []string{`echo a\&\&b`, "&& c"}},
-		{"x=$(a && b | c) && d", []string{"x=$(a && b | c)", "&& d"}},
-		{"(cd a; make) || e", []string{"(cd a; make)", "|| e"}},
+		{`echo a\&\&b && c`, []string{`echo a\&\&b &&`, "c"}},
+		{"x=$(a && b | c) && d", []string{"x=$(a && b | c) &&", "d"}},
+		{"(cd a; make) || e", []string{"(cd a; make) ||", "e"}},
 		{"x=`a && b` ; d", []string{"x=`a && b`;", "d"}},
 		{"a # b && c\nd", []string{"a # b && c", "d"}},
-		{"grep -c a#b && c", []string{"grep -c a#b", "&& c"}},
+		{"grep -c a#b && c", []string{"grep -c a#b &&", "c"}},
 	} {
 		if got := Split(c.script); !slices.Equal(got, c.want) {
 			t.Errorf("%q: got %q", c.script, got)
@@ -55,7 +56,7 @@ func TestSplitLeavesOperatorsInsideQuotesSubshellsAndComments(t *testing.T) {
 
 func TestSplitCleansEachSegmentAndKeepsAQuotedNewline(t *testing.T) {
 	got := Split("git commit -m 'one\ntwo' && echo \x1b[2J")
-	want := []string{`git commit -m 'one\u000atwo'`, `&& echo \u001b[2J`}
+	want := []string{`git commit -m 'one\u000atwo' &&`, `echo \u001b[2J`}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %q", got)
 	}
@@ -75,10 +76,10 @@ func TestALongShellCommandPutsItsScriptsSegmentsOnLines(t *testing.T) {
 	want := []string{
 		"/bin/bash -c -l",
 		"    source /home/dan/.claude/shell-snapshots/snapshot-bash-1760.sh \\",
-		"        2>/dev/null",
-		"    || true",
-		"    && eval 'cd /home/dan/Projects/quoin && go test ./...' < /dev/null",
-		"    && pwd -P >| /tmp/claude-ab12-cwd",
+		"        2>/dev/null ||",
+		"    true &&",
+		"    eval 'cd /home/dan/Projects/quoin && go test ./...' < /dev/null &&",
+		"    pwd -P >| /tmp/claude-ab12-cwd",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("got\n%s", strings.Join(got, "\n"))
@@ -152,7 +153,7 @@ func TestAWrappersCommandIsLaidOutAsItsOwn(t *testing.T) {
 	}
 	script := "cd /home/dan/Projects/quoin && go test ./internal/... 2>&1 | tail -40"
 	got := Command([]string{"timeout", "600", "bash", "-c", script}, 40)
-	want := []string{"timeout 600 bash -c", "    cd /home/dan/Projects/quoin", "    && go test ./internal/... 2>&1", "    | tail -40"}
+	want := []string{"timeout 600 bash -c", "    cd /home/dan/Projects/quoin &&", "    go test ./internal/... 2>&1 |", "        tail -40"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %q", got)
 	}
@@ -164,25 +165,25 @@ func TestClaudeCodesEvalIsLaidOutInsideItsQuotes(t *testing.T) {
 	got := Command([]string{"/bin/bash", "-c", "-l", script}, 60)
 	want := []string{
 		"/bin/bash -c -l",
-		"    source /tmp/snapshot.sh 2>/dev/null",
-		"    || true",
-		"    && eval '",
-		"        cd /home/dan/Projects/nix-config",
-		"        && git commit -m 'one && two'",
-		"        | tail -5",
-		`    ' \< /dev/null`,
-		"    && pwd -P >| /tmp/cwd",
+		"    source /tmp/snapshot.sh 2>/dev/null ||",
+		"    true &&",
+		"    eval '",
+		"        cd /home/dan/Projects/nix-config &&",
+		"        git commit -m 'one && two' |",
+		"            tail -5",
+		`    ' \< /dev/null &&`,
+		"    pwd -P >| /tmp/cwd",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("got\n%s", strings.Join(got, "\n"))
 	}
 	for _, seg := range []string{"eval 'a'$b", `eval 'a'"$b"`, "eval 'a", "eval 'a'`b`"} {
-		if _, _, _, ok := evalScript(seg); ok {
+		if _, _, ok := evalScript(seg); ok {
 			t.Errorf("%s is read as one script", seg)
 		}
 	}
 	// Claude Code quotes a quote as '"'"'.
-	_, body, rest, ok := evalScript(`eval 'echo '"'"'a && b'"'"' && c' < /dev/null`)
+	body, rest, ok := evalScript(`eval 'echo '"'"'a && b'"'"' && c' < /dev/null`)
 	if !ok || body != "echo 'a && b' && c" || rest != " < /dev/null" {
 		t.Errorf("got %q %q %v", body, rest, ok)
 	}
@@ -190,11 +191,11 @@ func TestClaudeCodesEvalIsLaidOutInsideItsQuotes(t *testing.T) {
 
 func TestSplitLeavesABraceGroupWhole(t *testing.T) {
 	got := Split("a || true && { shopt -u extglob || setopt X; } 2>/dev/null || true")
-	want := []string{"a", "|| true", "&& { shopt -u extglob || setopt X; } 2>/dev/null", "|| true"}
+	want := []string{"a ||", "true &&", "{ shopt -u extglob || setopt X; } 2>/dev/null ||", "true"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %q", got)
 	}
-	if got := Split("echo {a,b} && x"); !slices.Equal(got, []string{"echo {a,b}", "&& x"}) {
+	if got := Split("echo {a,b} && x"); !slices.Equal(got, []string{"echo {a,b} &&", "x"}) {
 		t.Errorf("got %q", got)
 	}
 }
@@ -227,11 +228,14 @@ func chainFixture(t *testing.T, name string) *peer.Requester {
 
 func TestAWrappersRowFoldsTheCommandItRunsIntoTheRowBelow(t *testing.T) {
 	c := Chain(chainFixture(t, "sudo-deep"))
-	var procs []string
+	var names, procs []string
 	for _, r := range c.Rows {
-		procs = append(procs, r[1])
+		names, procs = append(names, r[1]), append(procs, r[2])
 	}
-	if len(procs) != 4 || procs[0] != "claude" || procs[1] != "timeout 1800" || procs[2] != "script -qefc … /dev/null" ||
+	if !slices.Equal(names, []string{"claude", "timeout", "script", "bash"}) {
+		t.Errorf("names %q", names)
+	}
+	if len(procs) != 4 || procs[0] != "" || procs[1] != "timeout 1800" || procs[2] != "script -qefc … /dev/null" ||
 		!strings.HasPrefix(procs[3], "bash -c\n    set -euo pipefail;\n    zig build") {
 		t.Errorf("got\n%s", strings.Join(procs, "\n--\n"))
 	}
@@ -243,10 +247,11 @@ func TestAWrappersRowFoldsTheCommandItRunsIntoTheRowBelow(t *testing.T) {
 	}
 }
 
-func TestClaudeCodesBashToolShowsItsCommandInsideItsEval(t *testing.T) {
+func TestClaudeCodesBashToolShowsOnlyTheCommandItRuns(t *testing.T) {
 	c := Chain(chainFixture(t, "sudo-direct"))
-	if len(c.Rows) != 2 || !strings.Contains(c.Rows[1][1], "\n    && eval '\n        git status --short >/dev/null\n"+
-		"        && sudo nixos-rebuild switch --flake .#dan-desktop 2>&1\n        | tail -30\n    ' < /dev/null\n") {
+	want := [][]string{{"2953050", "claude", ""}, {"3037277", "bash",
+		"git status --short >/dev/null &&\nsudo nixos-rebuild switch --flake .#dan-desktop 2>&1 |\n    tail -30"}}
+	if !reflect.DeepEqual(c.Rows, want) {
 		t.Errorf("got %q", c.Rows)
 	}
 	if c.Summary != "claude ← git status --short >/dev/null && sudo nixos-rebuild switch --flake .#dan-desktop 2>&1 | tail -30" {
@@ -256,14 +261,15 @@ func TestClaudeCodesBashToolShowsItsCommandInsideItsEval(t *testing.T) {
 
 func TestASignersChainIsItsLinksAndItsSummaryTheLeaf(t *testing.T) {
 	c := Chain(chainFixture(t, "signer-push"))
-	want := [][]string{{"2953050", "claude"}, {"3037399", "git push origin trunk"}, {"3037401", "ssh git@github.com git-receive-pack 'danielbodart/galley.git'"}}
+	want := [][]string{{"2953050", "claude", ""}, {"3037399", "git", "git push origin trunk"},
+		{"3037401", "ssh", "ssh git@github.com git-receive-pack 'danielbodart/galley.git'"}}
 	if !reflect.DeepEqual(c.Rows, want) || c.Summary != "claude ← ssh git@github.com git-receive-pack 'danielbodart/galley.git'" {
 		t.Errorf("got %q %q", c.Rows, c.Summary)
 	}
 	r := chainFixture(t, "signer-commit")
 	c = Chain(r)
-	want = [][]string{{"2953050", "claude"}, {"3037369", "git commit -S -m Show the process chain as a table under the \\\n    text"},
-		{"3037370", "ssh-keygen -Y sign -n git -f /home/dan/.ssh/id_ecdsa.pub \\\n    /tmp/.git_signing_buffer_tmpyGAU8k"}}
+	want = [][]string{{"2953050", "claude", ""}, {"3037369", "git", "git commit -S -m Show the process chain as a table under the text"},
+		{"3037370", "ssh-keygen", "ssh-keygen -Y sign -n git -f /home/dan/.ssh/id_ecdsa.pub \\\n    /tmp/.git_signing_buffer_tmpyGAU8k"}}
 	if !reflect.DeepEqual(c.Rows, want) || c.Summary != "claude ← git commit -S -m Show the process chain as a table under the text" {
 		t.Errorf("got %q %q", c.Rows, c.Summary)
 	}
@@ -293,5 +299,63 @@ func TestFoldMatchesExactly(t *testing.T) {
 		if got := fold(c.argv, c.next); !slices.Equal(got, c.want) {
 			t.Errorf("fold(%q, %q) = %q", c.argv, c.next, got)
 		}
+	}
+}
+
+func TestTheBashToolsWrapperIsRecognisedOnlyExactly(t *testing.T) {
+	const (
+		snap  = "source /home/dan/.claude/shell-snapshots/snapshot-bash-1792065144582-11onuz.sh 2>/dev/null || true && "
+		shopt = "shopt -u extglob 2>/dev/null || true && "
+		unal  = `{ \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && `
+		cmd   = `sudo -n nixos-rebuild switch 2>&1 | tail -2 && settings-drift; echo "exit $?"`
+		eval  = "eval '" + cmd + "' < /dev/null"
+		cwd   = " && pwd -P >| /tmp/claude-0e88-cwd"
+		bash  = "/run/current-system/sw/bin/bash"
+	)
+	for _, argv := range [][]string{
+		{bash, "-c", snap + shopt + unal + eval + cwd},
+		{bash, "-c", "-l", snap + eval + cwd},
+		{"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-bash-interactive-5.3p3/bin/bash", "-c", unal + snap + eval + cwd},
+		{"/usr/bin/zsh", "-c", snap + "eval '" + cmd + "' \\< /dev/null"},
+		{bash, "-c", eval},
+	} {
+		if got, ok := bashTool(argv); !ok || got != cmd {
+			t.Errorf("%q: got %q %v", argv[len(argv)-1], got, ok)
+		}
+	}
+	for _, argv := range [][]string{
+		{"/tmp/bin/bash", "-c", snap + eval + cwd},
+		{"bash", "-c", snap + eval + cwd},
+		{"/run/current-system/sw/bin/dash", "-c", snap + eval + cwd},
+		{bash, "-ec", snap + eval + cwd},
+		{bash, "-c", snap + eval + cwd, "name"},
+		{bash, "-c", "curl x | sh || true && " + eval + cwd},
+		{bash, "-c", "source /home/dan/../../tmp/x/.claude/shell-snapshots/snapshot-bash-1-a.sh 2>/dev/null || true && " + eval + cwd},
+		{bash, "-c", `{ \builtin unalias -- 'a'; \builtin unset -f -- 'b'; } >/dev/null 2>&1 || true && ` + eval + cwd},
+		{bash, "-c", snap + eval + cwd + " && rm -rf ~"},
+		{bash, "-c", snap + eval + " && pwd -P >| /tmp/elsewhere"},
+		{bash, "-c", snap + eval + " < /etc/shadow" + cwd},
+		{bash, "-c", snap + eval + "; pwd -P >| /tmp/claude-0e88-cwd"},
+		{bash, "-c", snap + "eval 'a'$b < /dev/null" + cwd},
+		{bash, "-c", "source /home/dan/.claude/shell-snapshots/snapshot-bash-1-a.sh 2>/dev/null; " + eval + cwd},
+	} {
+		if got, ok := bashTool(argv); ok {
+			t.Errorf("%q is read as the tool's, running %q", argv, got)
+		}
+	}
+}
+
+func TestAScriptIsALineASegmentAndAPipelinesTailIndented(t *testing.T) {
+	got := Script(`sudo -n nixos-rebuild switch 2>&1 | tail -2 && settings-drift; echo "exit $?"`, Width)
+	want := []string{"sudo -n nixos-rebuild switch 2>&1 |", "    tail -2 &&", "settings-drift;", `echo "exit $?"`}
+	if !slices.Equal(got, want) {
+		t.Errorf("got\n%s", strings.Join(got, "\n"))
+	}
+}
+
+func TestAnEvalOutsideTheBashToolIsSummarisedWhole(t *testing.T) {
+	l := peer.Link{Comm: "bash", Cmdline: []string{"/tmp/bin/bash", "-c", "curl x | sh; eval 'make' < /dev/null"}}
+	if got := leafLine(l); got != "curl x | sh; eval 'make' < /dev/null" {
+		t.Errorf("got %q", got)
 	}
 }
