@@ -20,7 +20,10 @@
       # project's policy file, and the three gatekeepers, quoin-signer,
       # quoin-sudo and quoin-courier. They share one module and one test
       # suite, so a change to any of them rebuilds and retests all of them
-      # anyway; one derivation runs that suite once.
+      # anyway. The suite is not run here but by checks.tests, from the same
+      # derivation with doCheck on: everything built on the package -- each
+      # VM test, and a host's system -- waits only for the compile, not for
+      # the tests as well.
       mkQuoin = pkgs: pkgs.buildGoModule {
         pname = "quoin";
         inherit version;
@@ -70,8 +73,8 @@
         # leave out the excluded packages' tests. peer's user namespace test
         # skips cleanly where the kernel refuses one, so this passes in the
         # Nix sandbox and means something on a machine where it does not have
-        # to.
-        doCheck = true;
+        # to. Off in the package; checks.tests turns it on.
+        doCheck = false;
         checkPhase = ''
           runHook preCheck
           go test ./...
@@ -164,9 +167,16 @@
           };
         in
         {
-          # The build, which is also the unit tests, the property tests and the
-          # fuzz corpora.
+          # The build.
           inherit (self.packages.${system}) quoin;
+
+          # The unit tests, the property tests and the fuzz corpora: the
+          # package's own derivation with its check on.
+          tests = pkg.overrideAttrs (_: {
+            pname = "quoin-tests";
+            inherit (pkg) goModules;
+            doCheck = true;
+          });
 
           # quoin-sudo's Zig, and its tests, the mode parse held to sudo's
           # own parse_args among them, lint, fmt and zwanzig.
@@ -377,6 +387,7 @@
           govet = pkg.overrideAttrs (_: {
             pname = "quoin-vet";
             inherit (pkg) goModules;
+            doCheck = true;
             checkPhase = ''
               runHook preCheck
               go vet ./...
@@ -391,6 +402,7 @@
             pname = "quoin-race";
             inherit (pkg) goModules;
             env = (old.env or { }) // { CGO_ENABLED = 1; };
+            doCheck = true;
             checkPhase = ''
               runHook preCheck
               go test -race ./...

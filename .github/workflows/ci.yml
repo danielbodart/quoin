@@ -7,8 +7,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The checks spread over runners, each with its own four vCPUs: on one
+  # runner the VM tests, the Zig check and the race tests all shared four, and
+  # the whole check took seven minutes. Each check that takes minutes is a leg
+  # of its own, named in SEPARATE; the rest leg builds every other check, so a
+  # check added to the flake is built by the rest leg until it is given one,
+  # and is never left out. Every leg builds the package itself, there being no
+  # binary cache to share it through.
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [signer, sudo-gate, sudo-remote, policy, sudo-zig, race, rest]
+    env:
+      # The legs above but rest: kept in step with them, which the rest leg
+      # holds by counting.
+      SEPARATE: signer sudo-gate sudo-remote policy sudo-zig race
     steps:
       - uses: actions/checkout@v7
 
@@ -39,8 +54,32 @@ jobs:
       - name: Let unprivileged user namespaces hold capabilities
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: nix flake check
-        run: nix flake check --print-build-logs
+      # nix flake check --no-build evaluates every output, on every system,
+      # as nix flake check would, and builds nothing: the legs build.
+      - name: Evaluate the flake
+        if: matrix.checks == 'rest'
+        run: nix flake check --no-build
+
+      - name: Build ${{ matrix.checks }}
+        env:
+          LEG: ${{ matrix.checks }}
+          LEGS: ${{ strategy.job-total }}
+        run: |
+          if [ "$LEG" = rest ]; then
+            read -ra separate <<<"$SEPARATE"
+            if [ "$LEGS" -ne $(( ${#separate[@]} + 1 )) ]; then
+              echo "SEPARATE names ${#separate[@]} legs and the matrix has $LEGS with rest: keep them in step" >&2
+              exit 1
+            fi
+            all=$(nix eval --json .#checks.x86_64-linux --apply builtins.attrNames | jq -r '.[]')
+            for c in "${separate[@]}"; do
+              grep -qxF "$c" <<<"$all" || { echo "SEPARATE names $c, which is no check" >&2; exit 1; }
+            done
+            mapfile -t checks < <(grep -vxF -f <(printf '%s\n' "${separate[@]}") <<<"$all")
+          else
+            checks=("$LEG")
+          fi
+          nix build --no-link --print-build-logs "${checks[@]/#/.#checks.x86_64-linux.}"
 
   # CONTINUOUS RELEASE. Trunk-based: every push to trunk that passes the check
   # above is published, with no manual step and no tag to cut by hand. Gated on
