@@ -5,7 +5,9 @@
 // only the system units it is told to.
 //
 // It is trusted for one thing, which project a process is in: an anchor's
-// working directory, up to the nearest policy file. It cannot forge one, since
+// working directory, up to the nearest policy file, and the namespace it is
+// signed in, a worktree's being its repository's, which the root-run
+// verifiers cannot read for themselves. It cannot forge one, since
 // every reader verifies the signature against root's allowed signers, and it
 // writes only a file whose signature already verifies.
 //
@@ -201,7 +203,7 @@ func (s *Server) read(req courier.Request) (courier.Response, error) {
 		if root = gitRoot(cwd, s.Home); root == "" {
 			return courier.Response{}, nil
 		}
-		ns, err := projpolicy.Namespace(root, s.Home)
+		ns, err := projpolicy.ProjectNamespace(root, s.Home)
 		if err != nil {
 			return courier.Response{}, err
 		}
@@ -210,7 +212,7 @@ func (s *Server) read(req courier.Request) (courier.Response, error) {
 	if err != nil {
 		return courier.Response{}, err
 	}
-	ns, err := projpolicy.Namespace(root, s.Home)
+	ns, err := projpolicy.ProjectNamespace(root, s.Home)
 	if err != nil {
 		return courier.Response{}, err
 	}
@@ -278,7 +280,7 @@ func (s *Server) write(req courier.Request) (courier.Response, error) {
 	if !projpolicy.Canonical(req.Bytes) {
 		return courier.Response{}, errors.New("the new file is not canonical")
 	}
-	ns, err := projpolicy.Namespace(root, s.Home)
+	ns, err := projpolicy.ProjectNamespace(root, s.Home)
 	if err != nil {
 		return courier.Response{}, err
 	}

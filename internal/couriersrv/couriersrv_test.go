@@ -317,3 +317,97 @@ func mustSigners(t *testing.T, h *harness) *projpolicy.AllowedSigners {
 }
 
 func timeNow() time.Time { return time.Now() }
+
+// worktree is a repository at Projects/<name> and a worktree of it, made by
+// git itself, as git worktree add lays them out.
+func (h *harness) worktree(name string) (main, wt string) {
+	h.t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		h.t.Skip("no git: ", err)
+	}
+	main = h.mkdir("Projects/" + name)
+	wt = filepath.Join(main, ".claude", "worktrees", "pi")
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"worktree", "add", "-q", wt},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = main
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			h.t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return main, wt
+}
+
+func TestAWorktreesFileIsReadAndWrittenInItsRepositorysNamespace(t *testing.T) {
+	h := newHarness(t)
+	main, wt := h.worktree("foo")
+	ctx := context.Background()
+
+	// Signed as the repository's, the worktree's file verifies.
+	if err := os.WriteFile(filepath.Join(wt, "chase.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "chase.json.sig"), h.sign(main, body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pid, start := sleeper(t, wt)
+	got, err := courier.Read(ctx, h.signer951().socket, pid, start)
+	if err != nil || got.Root != wt || got.Namespace != "quoin-policy:~/Projects/foo" {
+		t.Fatalf("read: %+v, %v", got, err)
+	}
+	if _, err := projpolicy.Verify(got.Bytes, got.Sig, got.Namespace, mustSigners(t, h), "", timeNow()); err != nil {
+		t.Errorf("what was read does not verify: %v", err)
+	}
+
+	// With no file yet, the worktree is where a first rule goes, in the
+	// repository's namespace.
+	if err := os.Remove(filepath.Join(wt, "chase.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(wt, "chase.json.sig")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = courier.Read(ctx, h.signer951().socket, pid, start)
+	if err != nil || got.Root != wt || got.Namespace != "quoin-policy:~/Projects/foo" || got.Digest != "" {
+		t.Fatalf("no file: %+v, %v", got, err)
+	}
+
+	// A write there takes the repository's signature, and only that.
+	if _, err := courier.Write(ctx, h.signer951().socket, wt, "", body, h.sign(wt, body)); err == nil || !strings.Contains(err.Error(), "does not verify") {
+		t.Errorf("the worktree's own namespace: %v", err)
+	}
+	got, err = courier.Write(ctx, h.signer951().socket, wt, "", body, h.sign(main, body))
+	if err != nil || got.Root != wt || got.Namespace != "quoin-policy:~/Projects/foo" {
+		t.Fatalf("write: %+v, %v", got, err)
+	}
+	if p, err := projpolicy.Load(wt, h.home, "chase.json", mustSigners(t, h)); err != nil || !p.Verified {
+		t.Errorf("written: %+v, %v", p, err)
+	}
+
+	// The same bytes and signature verify in the repository itself.
+	for _, f := range []string{"chase.json", "chase.json.sig"} {
+		b, _ := os.ReadFile(filepath.Join(wt, f))
+		if err := os.WriteFile(filepath.Join(main, f), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p, err := projpolicy.Load(main, h.home, "chase.json", mustSigners(t, h)); err != nil || !p.Verified {
+		t.Errorf("in the repository: %+v, %v", p, err)
+	}
+
+	// A directory whose .git file names the repository, which does not name
+	// it back, is a project of its own.
+	fake := h.mkdir("Projects/fake")
+	b, _ := os.ReadFile(filepath.Join(wt, ".git"))
+	if err := os.WriteFile(filepath.Join(fake, ".git"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pid, start = sleeper(t, fake)
+	if got, err := courier.Read(ctx, h.signer951().socket, pid, start); err != nil || got.Namespace != "quoin-policy:~/Projects/fake" {
+		t.Errorf("fake: %+v, %v", got, err)
+	}
+}

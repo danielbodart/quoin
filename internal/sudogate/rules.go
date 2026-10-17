@@ -155,7 +155,7 @@ func (g *Gate) project(ctx context.Context, a *sudoReq) *project {
 		g.Log.Warn("project policy unread", "root", resp.Root, "err", err.Error())
 		return nil
 	}
-	key := strings.Join([]string{resp.Root, resp.Digest, string(resp.Sig), projpolicy.Digest(sb)}, "\x00")
+	key := strings.Join([]string{resp.Root, resp.Namespace, resp.Digest, string(resp.Sig), projpolicy.Digest(sb)}, "\x00")
 	if p := g.projects.get(key); p != nil {
 		return p
 	}
@@ -180,9 +180,11 @@ func (g *Gate) load(resp *courier.Response, signersFile []byte) (*project, error
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return nil, fmt.Errorf("root %q is not absolute and clean", root)
 	}
-	ns, err := projpolicy.Namespace(root, g.Policy.Home)
-	if err != nil {
-		return nil, err
+	// The courier's, as the signer takes it: only it can read whether root
+	// is a worktree, whose namespace is its repository's.
+	ns := resp.Namespace
+	if !projpolicy.IsNamespace(ns) {
+		return nil, fmt.Errorf("the courier's namespace %q is not a project's", ns)
 	}
 	signers, err := projpolicy.ParseAllowedSigners(signersFile)
 	if err != nil {

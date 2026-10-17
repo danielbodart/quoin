@@ -33,6 +33,70 @@ func Namespace(root, home string) (string, error) {
 	return NamespacePrefix + ":" + r, nil
 }
 
+// ProjectNamespace is the namespace a policy file in root is signed in:
+// Namespace of ProjectRoot, so a git worktree's file is signed as its
+// repository's.
+func ProjectNamespace(root, home string) (string, error) {
+	return Namespace(ProjectRoot(root, home), home)
+}
+
+// ProjectRoot is the project a directory's policy file belongs to: for a
+// linked git worktree, the repository's main working tree, so one signature
+// serves the checkout and every worktree of it; else root itself. A worktree
+// is one whose .git is a regular file naming <main>/.git/worktrees/<id>,
+// whose gitdir file names root's .git back, as git worktree add writes both,
+// with <main> under home. A .git file that only claims a repository, a
+// submodule's, a bare repository's worktree, anything unreadable, is root.
+func ProjectRoot(root, home string) string {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(home) {
+		return root
+	}
+	root = filepath.Clean(root)
+	dotGit := filepath.Join(root, ".git")
+	b, err := ReadFile(dotGit)
+	if err != nil {
+		return root
+	}
+	admin, ok := strings.CutPrefix(strings.TrimRight(string(b), "\n"), "gitdir: ")
+	if !ok || admin == "" || strings.ContainsRune(admin, '\n') {
+		return root
+	}
+	if !filepath.IsAbs(admin) {
+		admin = filepath.Join(root, admin)
+	}
+	admin = filepath.Clean(admin)
+	common := filepath.Dir(filepath.Dir(admin))
+	if filepath.Base(filepath.Dir(admin)) != "worktrees" || filepath.Base(common) != ".git" {
+		return root
+	}
+	back, err := ReadFile(filepath.Join(admin, "gitdir"))
+	if err != nil {
+		return root
+	}
+	named := strings.TrimRight(string(back), "\n")
+	if !filepath.IsAbs(named) {
+		named = filepath.Join(admin, named)
+	}
+	if filepath.Clean(named) != dotGit {
+		return root
+	}
+	if st, err := os.Lstat(common); err != nil || !st.IsDir() {
+		return root
+	}
+	main := filepath.Dir(common)
+	if _, ok := under(main, filepath.Clean(home)); !ok {
+		return root
+	}
+	return main
+}
+
+// IsNamespace is whether ns is one Namespace could name: the prefix, a
+// colon and a name, on one line.
+func IsNamespace(ns string) bool {
+	name, ok := strings.CutPrefix(ns, NamespacePrefix+":")
+	return ok && name != "" && !strings.ContainsAny(name, "\n\x00")
+}
+
 // RootName is root as a namespace names it: ~/rel under home, else the
 // cleaned absolute path.
 func RootName(root, home string) (string, error) {
@@ -118,11 +182,11 @@ type Policy struct {
 }
 
 // Load reads root/name and root/name.sig and verifies the signature over
-// the file's exact bytes, in root's namespace (home decides its name),
+// the file's exact bytes, in its project's namespace (ProjectNamespace),
 // against signers. An unreadable policy file is the error; a missing,
 // malformed or wrong signature is Verified false, with Why saying which.
 func Load(root, home, name string, signers *AllowedSigners) (*Policy, error) {
-	ns, err := Namespace(root, home)
+	ns, err := ProjectNamespace(root, home)
 	if err != nil {
 		return nil, err
 	}

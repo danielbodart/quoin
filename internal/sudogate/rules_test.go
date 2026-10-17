@@ -239,10 +239,11 @@ func (p *fakeProject) file(t *testing.T, root string, doc any, signed bool, name
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := &courier.Response{Root: root, Bytes: b, Digest: projpolicy.Digest(b)}
+	ns, _ := projpolicy.Namespace(root, home)
+	resp := &courier.Response{Root: root, Namespace: ns, Bytes: b, Digest: projpolicy.Digest(b)}
 	if signed {
 		if namespace == "" {
-			namespace, _ = projpolicy.Namespace(root, home)
+			namespace = ns
 		}
 		s, err := ssh.NewSignerFromKey(p.key)
 		if err != nil {

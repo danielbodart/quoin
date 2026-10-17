@@ -127,7 +127,7 @@ func (c *conn) project(req *request) *layer {
 		c.s.Log.Warn("project policy unread", "root", resp.Root, "err", err.Error())
 		return nil
 	}
-	key := strings.Join([]string{resp.Root, resp.Digest, string(resp.Sig), projpolicy.Digest(sb)}, "\x00")
+	key := strings.Join([]string{resp.Root, resp.Namespace, resp.Digest, string(resp.Sig), projpolicy.Digest(sb)}, "\x00")
 	if l := c.s.layers.get(key); l != nil {
 		req.proj = l
 		return l
@@ -151,12 +151,16 @@ func (s *Server) load(resp *courier.Response, signersFile []byte) (*layer, error
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return nil, fmt.Errorf("root %q is not absolute and clean", root)
 	}
-	ns, err := projpolicy.Namespace(root, s.Policy.Home)
-	if err != nil {
-		return nil, err
+	// The courier names the namespace, since only it can read whether root
+	// is a worktree of a repository, whose namespace it then has. That is no
+	// more trust than it has already: it says which file is the project's.
+	ns := resp.Namespace
+	if !projpolicy.IsNamespace(ns) {
+		return nil, fmt.Errorf("the courier's namespace %q is not a project's", ns)
 	}
 	name, _ := projpolicy.RootName(root, s.Policy.Home)
 	l := &layer{root: root, rootName: name, namespace: ns, digest: resp.Digest}
+	var err error
 	if l.signers, err = projpolicy.ParseAllowedSigners(signersFile); err != nil {
 		return nil, fmt.Errorf("%s: %w", s.Policy.AllowedSigners, err)
 	}

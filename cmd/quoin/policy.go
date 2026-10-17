@@ -143,6 +143,7 @@ func runPolicySign(argv []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("policy sign", flag.ContinueOnError)
 	sock := flags.String("agent", os.Getenv("SSH_AUTH_SOCK"), "the signer's agent socket")
 	oldPath := flags.String("old", "", "the bytes POLICY.sig was made over (default: git's HEAD of POLICY)")
+	home := flags.String("home", "", "the home a root's namespace is named from (default $HOME)")
 	if err := flags.Parse(argv); err != nil {
 		return err
 	}
@@ -172,7 +173,14 @@ func runPolicySign(argv []string, stdout io.Writer) error {
 	if !projpolicy.Canonical(b) {
 		return fmt.Errorf("%s is not canonical: run quoin policy fmt %s first, and look at what it changed", path, path)
 	}
-	req := policysign.Request{Root: root, Name: name, New: b}
+	if *home == "" {
+		if *home, err = os.UserHomeDir(); err != nil {
+			return err
+		}
+	}
+	// A worktree's file is signed as its repository's, the project the
+	// courier names it by.
+	req := policysign.Request{Root: projpolicy.ProjectRoot(root, *home), Name: name, New: b}
 	req.OldSig, err = projpolicy.ReadFile(path + projpolicy.SigSuffix)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):

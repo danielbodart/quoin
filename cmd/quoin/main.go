@@ -17,7 +17,8 @@ const usage = `quoin -- a project's signed policy file, by hand
   quoin policy verify [-allowed-signers FILE] [-home DIR] POLICY
         Verify POLICY.sig over POLICY's exact bytes, in the namespace of
         POLICY's directory, quoin-policy:~/rel under DIR (default $HOME)
-        and quoin-policy:/abs/path elsewhere, against the allowed signers
+        and quoin-policy:/abs/path elsewhere, a git worktree's being its
+        repository's, against the allowed signers
         (default ` + defaultAllowedSigners + `). Exits 0 when it verifies,
         else says why not.
 
@@ -29,9 +30,9 @@ const usage = `quoin -- a project's signed policy file, by hand
   quoin policy signers FILE
         Read an allowed signers file as verify would, and list its lines.
 
-  quoin policy sign [-agent SOCKET] [-old FILE] POLICY
-        Have quoin-signer sign POLICY, already canonical, in its directory's
-        namespace: galley shows the change and asks, and on Allow POLICY.sig
+  quoin policy sign [-agent SOCKET] [-old FILE] [-home DIR] POLICY
+        Have quoin-signer sign POLICY, already canonical, in its project's
+        namespace, a git worktree's being its repository's: galley shows the change and asks, and on Allow POLICY.sig
         is written. The change is shown against the bytes POLICY.sig was
         made over, -old FILE or else git's HEAD of POLICY, when the signature
         verifies over them; otherwise against nothing. -agent defaults to

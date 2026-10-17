@@ -224,3 +224,102 @@ func TestMergePatchIsRFC7396(t *testing.T) {
 		}
 	}
 }
+
+func TestAWorktreesProjectIsItsRepository(t *testing.T) {
+	top := t.TempDir()
+	home := filepath.Join(top, "home")
+	main := filepath.Join(home, "Projects", "foo")
+	wt := filepath.Join(main, ".claude", "worktrees", "pi")
+	admin := filepath.Join(main, ".git", "worktrees", "pi")
+	for _, d := range []string{wt, admin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// As git worktree add writes them: each names the other.
+	write(t, filepath.Join(wt, ".git"), "gitdir: "+admin+"\n")
+	write(t, filepath.Join(admin, "gitdir"), filepath.Join(wt, ".git")+"\n")
+	write(t, filepath.Join(admin, "commondir"), "../..\n")
+
+	if got := ProjectRoot(wt, home); got != main {
+		t.Fatalf("ProjectRoot(worktree) = %q, want %q", got, main)
+	}
+	if got, err := ProjectNamespace(wt, home); err != nil || got != "quoin-policy:~/Projects/foo" {
+		t.Errorf("ProjectNamespace(worktree) = %q, %v", got, err)
+	}
+	if got := ProjectRoot(main, home); got != main {
+		t.Errorf("the repository itself: %q", got)
+	}
+
+	// A relative gitdir, as git worktree add --relative-paths writes it.
+	write(t, filepath.Join(wt, ".git"), "gitdir: ../../../.git/worktrees/pi\n")
+	write(t, filepath.Join(admin, "gitdir"), "../../../.claude/worktrees/pi/.git\n")
+	if got := ProjectRoot(wt, home); got != main {
+		t.Errorf("relative gitdir: %q", got)
+	}
+
+	write(t, filepath.Join(admin, "gitdir"), filepath.Join(wt, ".git")+"\n")
+
+	// A .git file the repository does not name back is its own project.
+	fake := filepath.Join(home, "Projects", "fake")
+	if err := os.MkdirAll(fake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(fake, ".git"), "gitdir: "+admin+"\n")
+	if got := ProjectRoot(fake, home); got != fake {
+		t.Errorf("a .git file the repository does not name back: %q", got)
+	}
+
+	// Nor is a submodule's, or anything outside .git/worktrees.
+	sub := filepath.Join(main, "sub")
+	subAdmin := filepath.Join(main, ".git", "modules", "sub")
+	for _, d := range []string{sub, subAdmin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(sub, ".git"), "gitdir: "+subAdmin+"\n")
+	write(t, filepath.Join(subAdmin, "gitdir"), filepath.Join(sub, ".git")+"\n")
+	if got := ProjectRoot(sub, home); got != sub {
+		t.Errorf("a submodule: %q", got)
+	}
+
+	// A repository outside home lends no worktree its name.
+	out := filepath.Join(top, "srv", "foo")
+	outWt := filepath.Join(home, "wt")
+	outAdmin := filepath.Join(out, ".git", "worktrees", "wt")
+	for _, d := range []string{outWt, outAdmin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(outWt, ".git"), "gitdir: "+outAdmin+"\n")
+	write(t, filepath.Join(outAdmin, "gitdir"), filepath.Join(outWt, ".git")+"\n")
+	if got := ProjectRoot(outWt, home); got != outWt {
+		t.Errorf("a repository outside home: %q", got)
+	}
+
+	// A symlinked .git is not read.
+	link := filepath.Join(home, "Projects", "link")
+	if err := os.MkdirAll(link, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(wt, ".git"), filepath.Join(link, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if got := ProjectRoot(link, home); got != link {
+		t.Errorf("a symlinked .git: %q", got)
+	}
+}
+
+func TestIsNamespaceIsOneNamespaceCouldName(t *testing.T) {
+	for ns, want := range map[string]bool{
+		"quoin-policy:~/Projects/foo": true, "quoin-policy:/srv/x": true, "quoin-policy:~": true,
+		"": false, "quoin-policy:": false, "quoin-policy": false, "git": false,
+		"quoin-policy:~/a\nb": false, "other:quoin-policy:~": false,
+	} {
+		if got := IsNamespace(ns); got != want {
+			t.Errorf("IsNamespace(%q) = %v", ns, got)
+		}
+	}
+}

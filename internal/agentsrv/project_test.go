@@ -244,7 +244,7 @@ func TestAnUnverifiedProjectIsIgnoredWithOneLine(t *testing.T) {
 		}(),
 		"another project's": func() *courier.Response {
 			r := h.file(home+"/Projects/bar", project(`{"github.com": "allow"}`), true)
-			r.Root = foo
+			r.Root, r.Namespace = foo, "quoin-policy:~/Projects/foo"
 			return r
 		}(),
 		"a host-only key":              h.file(foo, "{\n  \"signer\": {\n    \"terminal\": \"allow\"\n  }\n}\n", true),
@@ -406,7 +406,7 @@ func TestAlwaysIsNotOfferedOverAFileItMayNotWrite(t *testing.T) {
 		withPolicy(fc)(s)
 		os.WriteFile(s.Policy.AllowedSigners, nil, 0o644)
 	})
-	fc.reads[100] = &courier.Response{Root: foo}
+	fc.reads[100] = &courier.Response{Root: foo, Namespace: "quoin-policy:~/Projects/foo"}
 	done := h.login(claude(100), h.github, false)
 	a := h.next()
 	if a.q.Always {
@@ -419,7 +419,7 @@ func TestAlwaysIsNotOfferedOverAFileItMayNotWrite(t *testing.T) {
 func TestAlwaysWhoseWriteConflictsStillSignsOnceAndSaysSo(t *testing.T) {
 	fc := &fakeCourier{reads: map[int]*courier.Response{}, conflict: true, noted: make(chan string, 1)}
 	h := newHarness(t, 1, withPolicy(fc))
-	fc.reads[100] = &courier.Response{Root: foo}
+	fc.reads[100] = &courier.Response{Root: foo, Namespace: "quoin-policy:~/Projects/foo"}
 	done := h.login(claude(100), h.github, false)
 	h.next().reply <- alwaysAnswer()
 	if err := wait(t, done); err != nil {
@@ -599,5 +599,44 @@ func TestAStuckCourierIsLetGoWhenTheRequesterHangsUp(t *testing.T) {
 	}
 	if err := wait(t, done); err == nil {
 		t.Error("signed for a requester that hung up")
+	}
+}
+
+func TestAWorktreesFileSignedAsItsRepositorysApplies(t *testing.T) {
+	fc := &fakeCourier{reads: map[int]*courier.Response{}}
+	h := newHarness(t, 1, withPolicy(fc))
+	// The courier says the worktree's namespace is its repository's.
+	wt := foo + "/.claude/worktrees/pi"
+	r := h.file(foo, project(`{"github.com": "allow"}`), true)
+	r.Root = wt
+	fc.reads[100] = r
+	if err := wait(t, h.login(claude(100), h.github, false)); err != nil {
+		t.Fatal(err)
+	}
+	h.nothingAsked()
+	if !strings.Contains(h.log.String(), `"source":"project"`) || !strings.Contains(h.log.String(), `"project":"`+wt+`"`) {
+		t.Errorf("logged %s", h.log)
+	}
+}
+
+func TestACourierNamingNoNamespaceIsNoProject(t *testing.T) {
+	fc := &fakeCourier{reads: map[int]*courier.Response{}}
+	h := newHarness(t, 1, withPolicy(fc))
+	for _, ns := range []string{"", "git", "quoin-policy:"} {
+		r := h.file(foo, project(`{"github.com": "allow"}`), true)
+		r.Namespace = ns
+		fc.reads[100] = r
+		done := h.login(claude(100), h.github, false)
+		a := h.next()
+		if a.q.Always {
+			t.Errorf("%q: Always offered", ns)
+		}
+		a.reply <- answered{}
+		if wait(t, done) == nil {
+			t.Errorf("%q: a refused sign was made", ns)
+		}
+	}
+	if !strings.Contains(h.log.String(), `"msg":"project policy unread"`) {
+		t.Errorf("logged %s", h.log)
 	}
 }

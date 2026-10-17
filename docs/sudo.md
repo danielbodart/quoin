@@ -202,8 +202,9 @@ claude> sudo systemctl stop sshd    # danger: the dialog, whatever a rule says
   pattern the host has is replaced, `null` takes it away, a new one is
   added. A project may set `exec` alone. The file counts only when
   `chase.json.sig` verifies against `/etc/quoin/allowed_signers` in
-  the project's namespace; unsigned, not verifying, or with a `sudo`
-  section a project may not set, it is ignored with one
+  the project's namespace, the one the courier names (a worktree's is its
+  repository's); unsigned, not verifying, or with a `sudo` section a
+  project may not set, it is ignored with one
   `project policy ignored` journal line, and the host's rules decide. No
   project, or the courier down, is the host's rules.
 - The journal's `decision` has `source` `host rule` or `project rule`,

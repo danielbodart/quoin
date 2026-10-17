@@ -23,6 +23,18 @@ bytes, in the namespace
 | `/srv/foo` (anywhere else) | `quoin-policy:/srv/foo` |
 
 so a signed file moved or copied to another project does not verify there.
+
+A linked git worktree is its repository's project: its file is signed in
+the repository's namespace, so the `.sig` committed beside it verifies in
+the checkout and in every worktree of it, `~/Projects/foo/.claude/worktrees/pi`
+included. A worktree is a directory whose `.git` is a regular file reading
+`gitdir: <repo>/.git/worktrees/<id>`, whose `gitdir` there names the
+directory's `.git` back, as `git worktree add` writes both, with `<repo>`
+under the home. Anything else, a `.git` file the repository does not name
+back, a submodule's, a bare repository's worktree, is a project of its own.
+So a worktree at an older commit has the rules that commit signed, as the
+checkout itself would at that commit; and enrolling a directory takes a
+write to the repository's own `.git`.
 Any change to the bytes, whitespace included, needs a new signature; the file
 is kept in one canonical form so that only real changes do.
 
@@ -111,9 +123,12 @@ enabled; another program's module adds its own unit, as frisket's does
 `frisket.service` to write the rule a session's question was answered Always
 with.
 
-It is trusted for one thing, which project a process is in. It cannot forge a
-policy, since every reader verifies the signature, and it writes only one
-whose signature already verifies.
+It is trusted for one thing, which project a process is in, and so its
+namespace: the signer and the gate cannot read the home, so cannot see that
+a root is a worktree, and verify in the namespace the courier names. That
+is no more than it had, since it already says which file is the project's.
+It cannot forge a policy, since every reader verifies the signature, and it
+writes only one whose signature already verifies.
 
 ### Wire
 
@@ -137,7 +152,8 @@ from its working directory. `sig` is absent when there is no signature beside th
 file. No file up to the home has no `digest` and no `bytes`: its `root` and
 `namespace` are the nearest directory up to the home holding `.git` (a
 repository, or a worktree's file), where a first rule would be written, and
-with none it is `{}`, no error.
+with none it is `{}`, no error. `namespace` is the root's project's, a
+worktree's being its repository's.
 
 ```
 {"op":"write","root":"/home/dan/Projects/foo","oldDigest":"sha256:…","bytes":"…","sig":"…"}
@@ -262,6 +278,8 @@ read, format, merge and verify the same way:
 | `(*AllowedSigners).Allowed(key, principal, namespace, now)` | One key's lines. |
 | `MatchPattern`, `MatchPatternList` | OpenSSH's `match_pattern` and `match_pattern_list`. |
 | `Namespace(root, home)`, `RootName(root, home)` | `quoin-policy:~/rel`, and `~/rel`. |
+| `ProjectRoot(root, home)`, `ProjectNamespace(root, home)` | A worktree's repository, else root; and its namespace. |
+| `IsNamespace(ns)` | Whether `Namespace` could have named ns. |
 | `Find(dir, home, name)` | The nearest directory up to home holding name; `ErrNotFound` when none. |
 | `Load(root, home, name, signers)` | Bytes, digest, signature, whether it verifies and why not. |
 | `ReadFile(path)` | A regular file, not through a symlink, at most 1 MiB. |

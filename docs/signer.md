@@ -180,7 +180,8 @@ In order, the first that applies:
 The project is the asking program's (the anchor's): the courier reads its
 working directory up to the nearest policy file, as
 [policy.md](policy.md) says. Its file applies only when its signature
-verifies against `/etc/quoin/allowed_signers` in the project's namespace
+verifies against `/etc/quoin/allowed_signers` in the project's namespace,
+the one the courier names (a worktree's is its repository's),
 and its `signer` section sets only `ssh.hosts` and `sshsig`; otherwise it is
 ignored, with one `project policy ignored` line per file, and the decision
 is as if there were none. So is a cut chain, a chain with no anchor, and a
