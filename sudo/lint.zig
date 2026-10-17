@@ -15,9 +15,9 @@ const Rule = enum {
     fn why(r: Rule) []const u8 {
         return switch (r) {
             .@"extern" => "C headers and symbols belong in abi.zig",
-            .@"export" => "the plugin's one export is quoin_audit, in quoin_sudo.zig",
-            .@"raw-number" => "a descriptor's number never leaves fd.zig",
-            .@"handle-guts" => "a handle's fields are fd.zig's",
+            .@"export" => "the plugin's exports are in quoin_sudo.zig, and the darwin build's in quoin_sudo_darwin.zig and its PAM module",
+            .@"raw-number" => "a descriptor's number never leaves fd.zig (fd_darwin.zig on macOS)",
+            .@"handle-guts" => "a handle's fields are fd.zig's (fd_darwin.zig's on macOS)",
             .@"catch-unreachable" => "say why it cannot happen: `// proven: <why>` on the line",
             .alloc => "no general-purpose allocator",
         };
@@ -28,8 +28,9 @@ fn applies(rule: Rule, name: []const u8) bool {
     const base = std.fs.path.basename(name);
     return switch (rule) {
         .@"extern" => !std.mem.eql(u8, base, "abi.zig"),
-        .@"export" => !std.mem.eql(u8, base, "quoin_sudo.zig") and !std.mem.eql(u8, base, "planted_type.zig"),
-        .@"raw-number", .@"handle-guts" => !std.mem.eql(u8, base, "fd.zig") and !std.mem.endsWith(u8, base, "_test.zig"),
+        .@"export" => !std.mem.eql(u8, base, "quoin_sudo.zig") and !std.mem.eql(u8, base, "planted_type.zig") and
+            !std.mem.eql(u8, base, "quoin_sudo_darwin.zig") and !std.mem.eql(u8, base, "quoin-sudo-pam-darwin.zig"),
+        .@"raw-number", .@"handle-guts" => !std.mem.eql(u8, base, "fd.zig") and !std.mem.eql(u8, base, "fd_darwin.zig") and !std.mem.endsWith(u8, base, "_test.zig"),
         .@"catch-unreachable" => true,
         .alloc => !std.mem.endsWith(u8, base, "_test.zig"),
     };

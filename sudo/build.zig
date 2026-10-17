@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
     const log_ids = b.option(bool, "log-ids", "Build a plugin that prints its ids before the drop and after the restore") orelse false;
     const oracle = b.option([]const u8, "oracle", "sudo's parse_args built as a test oracle (sudo/oracle)");
 
+    if (target.result.os.tag == .macos) return darwin(b, target, optimize);
+
     const install = b.getInstallStep();
     if (sudo_version) |v| {
         const cfg = config(b, gate_path, gate_uid, if (misread) .misread else if (log_ids) .log_ids else .stock, v);
@@ -168,6 +170,7 @@ const Modules = struct {
     chain: *std.Build.Module,
     agent: *std.Build.Module,
     ids: *std.Build.Module,
+    args: *std.Build.Module,
 
     fn get(m: Modules, name: []const u8) *std.Build.Module {
         inline for (@typeInfo(Modules).@"struct".fields) |f| {
@@ -208,7 +211,8 @@ fn modules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .link_libc = true,
         .imports = &.{ .{ .name = "abi", .module = abi }, .{ .name = "fd", .module = fd } },
     });
-    return .{ .abi = abi, .fd = fd, .wire = wire, .chain = chain, .agent = agent, .ids = ids };
+    const args = b.createModule(.{ .root_source_file = b.path("args.zig"), .target = target, .optimize = optimize });
+    return .{ .abi = abi, .fd = fd, .wire = wire, .chain = chain, .agent = agent, .ids = ids, .args = args };
 }
 
 fn plugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, m: Modules, cfg: *std.Build.Module, strip: bool) *std.Build.Step.Compile {
@@ -228,6 +232,7 @@ fn plugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
                 .{ .name = "chain", .module = m.chain },
                 .{ .name = "agent", .module = m.agent },
                 .{ .name = "ids", .module = m.ids },
+                .{ .name = "args", .module = m.args },
                 .{ .name = "config", .module = cfg },
             },
         }),
@@ -302,4 +307,181 @@ fn checkPluginCases(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         run.addCheck(.{ .expect_term = .{ .Exited = c.code } });
         step.dependOn(&run.step);
     }
+}
+
+/// macOS: the plugin doing the gate's remote half itself, its PAM module,
+/// and the pre-flight that runs at activation. -Dsudo-include=DIR names
+/// sudo_plugin.h's directory (Apple ships none); -Dloader=PATH the arm64e
+/// quoin-sudo-load the pre-flight runs, built apart with clang.
+fn darwin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const include = b.option([]const u8, "sudo-include", "The directory of sudo_plugin.h");
+    const pam_dir = b.option([]const u8, "pam", "An OpenPAM prefix to compile against (include/) and test with (lib/); without it, the SDK's");
+    const loader = b.option([]const u8, "loader", "The arm64e quoin-sudo-load the pre-flight runs") orelse "quoin-sudo-load";
+    const install = b.getInstallStep();
+    const cfg = darwinConfig(b, false, "/var/log/quoin-sudo.log", "/etc/ssh", loader);
+    // What is installed binds PAM where sudo does, from the libpam already
+    // in sudo's process: linking a libpam of its own would put a second
+    // one beside Apple's, whose handles it cannot read.
+    const m = darwinModules(b, target, optimize, include, pam_dir, false);
+    const t = darwinModules(b, target, optimize, include, pam_dir, true);
+    const plugin_lib = darwinPlugin(b, target, optimize, m, cfg, true);
+    install.dependOn(&b.addInstallFileWithDir(plugin_lib.getEmittedBin(), .lib, "quoin_sudo.so").step);
+    const pam_lib = darwinPam(b, target, optimize, m, true);
+    install.dependOn(&b.addInstallFileWithDir(pam_lib.getEmittedBin(), .lib, "quoin_sudo_pam.so").step);
+    b.installArtifact(b.addExecutable(.{
+        .name = "quoin-sudo-check-plugin",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("quoin-sudo-check-plugin-darwin.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = true,
+            .imports = &.{ .{ .name = "config", .module = cfg }, .{ .name = "sshkey", .module = m.sshkey } },
+        }),
+    }));
+
+    const test_step = b.step("test", "Run the darwin unit tests and the plugin's");
+    for ([_]*std.Build.Module{ t.fd, t.chain, t.agent, t.ids, t.sshkey, t.sudomsg }) |mod| {
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod })).step);
+    }
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = darwinPam(b, target, optimize, t, false).root_module })).step);
+    const test_cfg = darwinConfig(b, true, "quoin-sudo-test.log", "quoin-sudo-test-host", loader);
+    const pt = b.addTest(.{
+        .name = "darwin",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("darwin_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "plugin", .module = darwinPlugin(b, target, optimize, t, test_cfg, false).root_module },
+                .{ .name = "abi", .module = t.abi },
+                .{ .name = "agent", .module = t.agent },
+                .{ .name = "sudomsg", .module = t.sudomsg },
+                .{ .name = "config", .module = test_cfg },
+            },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(pt).step);
+
+    const lint_step = b.step("lint", "Run lint.zig over the package");
+    const lint = b.addExecutable(.{
+        .name = "lint",
+        .root_module = b.createModule(.{ .root_source_file = b.path("lint.zig"), .target = b.graph.host }),
+    });
+    const run = b.addRunArtifact(lint);
+    run.setCwd(b.path("."));
+    run.has_side_effects = true;
+    run.stdio = .inherit;
+    run.addArgs(&.{ "--skip", "analyze", "." });
+    lint_step.dependOn(&run.step);
+
+    const fmt_step = b.step("fmt", "Check the formatting of the package's Zig");
+    fmt_step.dependOn(&b.addFmt(.{ .check = true, .paths = &.{"."} }).step);
+}
+
+fn darwinConfig(b: *std.Build, force_remote: bool, log_path: []const u8, host_keys_dir: []const u8, loader: []const u8) *std.Build.Module {
+    const opts = b.addOptions();
+    opts.addOption(bool, "force_remote", force_remote);
+    opts.addOption([]const u8, "log_path", log_path);
+    opts.addOption([]const u8, "host_keys_dir", host_keys_dir);
+    opts.addOption([]const u8, "loader", loader);
+    return opts.createModule();
+}
+
+const DarwinModules = struct {
+    abi: *std.Build.Module,
+    fd: *std.Build.Module,
+    chain: *std.Build.Module,
+    agent: *std.Build.Module,
+    ids: *std.Build.Module,
+    args: *std.Build.Module,
+    sshkey: *std.Build.Module,
+    sudomsg: *std.Build.Module,
+};
+
+fn darwinModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, include: ?[]const u8, pam_dir: ?[]const u8, link_pam: bool) DarwinModules {
+    const abi = b.createModule(.{ .root_source_file = b.path("abi.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    if (include) |dir| abi.addIncludePath(.{ .cwd_relative = dir });
+    if (pam_dir) |dir| {
+        abi.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dir, "include" }) });
+        if (link_pam) abi.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ dir, "lib" }) });
+    }
+    if (link_pam) abi.linkSystemLibrary("pam", .{});
+    const fd = b.createModule(.{ .root_source_file = b.path("fd_darwin.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    const chain = b.createModule(.{
+        .root_source_file = b.path("chain.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{ .{ .name = "fd", .module = fd }, .{ .name = "abi", .module = abi } },
+    });
+    const agent = b.createModule(.{
+        .root_source_file = b.path("agent.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "fd", .module = fd }},
+    });
+    const ids = b.createModule(.{
+        .root_source_file = b.path("ids.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{ .{ .name = "abi", .module = abi }, .{ .name = "fd", .module = fd } },
+    });
+    const args = b.createModule(.{ .root_source_file = b.path("args.zig"), .target = target, .optimize = optimize });
+    const sshkey = b.createModule(.{
+        .root_source_file = b.path("sshkey.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "agent", .module = agent }},
+    });
+    const sudomsg = b.createModule(.{ .root_source_file = b.path("sudomsg.zig"), .target = target, .optimize = optimize });
+    return .{ .abi = abi, .fd = fd, .chain = chain, .agent = agent, .ids = ids, .args = args, .sshkey = sshkey, .sudomsg = sudomsg };
+}
+
+fn darwinPlugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, m: DarwinModules, cfg: *std.Build.Module, strip: bool) *std.Build.Step.Compile {
+    return undefinedAllowed(b.addLibrary(.{
+        .name = "quoin_sudo",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("quoin_sudo_darwin.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = strip,
+            .imports = &.{
+                .{ .name = "abi", .module = m.abi },
+                .{ .name = "fd", .module = m.fd },
+                .{ .name = "chain", .module = m.chain },
+                .{ .name = "agent", .module = m.agent },
+                .{ .name = "ids", .module = m.ids },
+                .{ .name = "args", .module = m.args },
+                .{ .name = "sshkey", .module = m.sshkey },
+                .{ .name = "sudomsg", .module = m.sudomsg },
+                .{ .name = "config", .module = cfg },
+            },
+        }),
+    }));
+}
+
+/// -undefined dynamic_lookup: PAM's symbols come from sudo's process.
+fn undefinedAllowed(lib: *std.Build.Step.Compile) *std.Build.Step.Compile {
+    lib.linker_allow_shlib_undefined = true;
+    return lib;
+}
+
+fn darwinPam(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, m: DarwinModules, strip: bool) *std.Build.Step.Compile {
+    return undefinedAllowed(b.addLibrary(.{
+        .name = "quoin_sudo_pam",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("quoin-sudo-pam-darwin.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = strip,
+            .imports = &.{.{ .name = "abi", .module = m.abi }},
+        }),
+    }));
 }

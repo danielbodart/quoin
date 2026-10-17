@@ -43,7 +43,7 @@ let
     hash = "sha256-GicN77r9Oh9xPqlIP5CS0/y2hSenxlM6thAiv1bjBW8=";
   };
 
-  sources = map (f: root + "/${f}") [ "abi.zig" "fd.zig" "wire.zig" "chain.zig" "agent.zig" "ids.zig" "quoin_sudo.zig" "quoin-sudo-pam.zig" "quoin-sudo-check-plugin.zig" ];
+  sources = map (f: root + "/${f}") [ "abi.zig" "fd.zig" "wire.zig" "chain.zig" "agent.zig" "ids.zig" "args.zig" "quoin_sudo.zig" "quoin-sudo-pam.zig" "quoin-sudo-check-plugin.zig" ];
 
   plugin = variant: zigBuild {
     pname = "quoin-sudo-plugin" + lib.optionalString (variant != null) "-${variant}";

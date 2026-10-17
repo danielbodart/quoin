@@ -1,7 +1,10 @@
-//! The chain above sudo, read from /proc as root.
+//! The chain above sudo, read as root: from /proc on Linux, from
+//! sysctl(KERN_PROC_PID) on macOS, which has no /proc.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const fd = @import("fd");
+const darwin = builtin.os.tag == .macos;
 
 pub const max_links = 16;
 pub const max_cmdline = 4096;
@@ -53,7 +56,38 @@ pub fn remote(links: []const Link, uid: u32) bool {
 
 const Stat = struct { comm: []const u8, ppid: u32, tty: u32, start: u64 };
 
-fn read(pid: u32, l: *Link) bool {
+const read = if (darwin) readSysctl else readProc;
+
+/// macOS: the process's kinfo_proc, read twice, its start time the check
+/// that the pid was not reused between the reads. The real uid, as Linux
+/// takes status's first Uid; no cmdline, which only the Linux gate shows.
+fn readSysctl(pid: u32, l: *Link) bool {
+    const c = @import("abi").c;
+    var kp: c.struct_kinfo_proc = undefined;
+    if (!kinfo(c, pid, &kp)) return false;
+    const comm = std.mem.sliceTo(&kp.kp_proc.p_comm, 0);
+    l.pid = pid;
+    l.ppid = @bitCast(kp.kp_eproc.e_ppid);
+    l.uid = kp.kp_eproc.e_pcred.p_ruid;
+    l.tty = if (kp.kp_eproc.e_tdev == -1) 0 else @bitCast(kp.kp_eproc.e_tdev);
+    const t = kp.kp_proc.p_un.__p_starttime;
+    l.start = @as(u64, @intCast(t.tv_sec)) * 1_000_000 + @as(u64, @intCast(t.tv_usec));
+    l.comm_len = @intCast(@min(comm.len, l.comm_buf.len));
+    @memcpy(l.comm_buf[0..l.comm_len], comm[0..l.comm_len]);
+    l.cmdline_len = 0;
+    var again: c.struct_kinfo_proc = undefined;
+    if (!kinfo(c, pid, &again)) return false;
+    const t2 = again.kp_proc.p_un.__p_starttime;
+    return t2.tv_sec == t.tv_sec and t2.tv_usec == t.tv_usec;
+}
+
+fn kinfo(comptime c: type, pid: u32, kp: *c.struct_kinfo_proc) bool {
+    var mib = [4]c_int{ c.CTL_KERN, c.KERN_PROC, c.KERN_PROC_PID, @intCast(pid) };
+    var len: usize = @sizeOf(c.struct_kinfo_proc);
+    return c.sysctl(&mib, mib.len, kp, &len, null, 0) == 0 and len == @sizeOf(c.struct_kinfo_proc);
+}
+
+fn readProc(pid: u32, l: *Link) bool {
     var path: [32]u8 = undefined;
     var stat_buf: [1024]u8 = undefined;
     var status_buf: [4096]u8 = undefined;
@@ -111,11 +145,16 @@ pub fn parseUid(b: []const u8) ?u32 {
 
 const testing = std.testing;
 
+/// The parent of this process, as the plugin walks from sudo's.
+pub fn parentPid() u32 {
+    return @intCast(if (darwin) std.c.getppid() else std.os.linux.getppid());
+}
+
 test "the walk starts at the given pid and follows the ppids" {
     var links: [max_links]Link = undefined;
-    const n = walk(@intCast(std.os.linux.getppid()), &links);
+    const n = walk(parentPid(), &links);
     try testing.expect(n >= 1);
-    try testing.expectEqual(@as(u32, @intCast(std.os.linux.getppid())), links[0].pid);
+    try testing.expectEqual(parentPid(), links[0].pid);
     for (links[1..n], links[0 .. n - 1]) |l, child| try testing.expectEqual(child.ppid, l.pid);
 }
 

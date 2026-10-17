@@ -3,6 +3,7 @@
 //! CAP_DAC_OVERRIDE passes the socket's modes.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("abi").c;
 const fd = @import("fd");
 
@@ -10,14 +11,29 @@ pub const max_groups = 65536;
 
 pub const Error = error{ Drop, Restore, Connect };
 
-/// libc's calls, which set the ids of every thread.
+/// libc's calls, which set the ids of every thread. macOS has no
+/// getres[ug]id: the real and saved ids are its own kinfo_proc's pcred.
 pub const Libc = struct {
     pub fn getresuid(out: *[3]u32) bool {
-        return c.getresuid(&out[0], &out[1], &out[2]) == 0;
+        if (builtin.os.tag != .macos) return c.getresuid(&out[0], &out[1], &out[2]) == 0;
+        const kp = self() orelse return false;
+        out.* = .{ kp.kp_eproc.e_pcred.p_ruid, c.geteuid(), kp.kp_eproc.e_pcred.p_svuid };
+        return true;
     }
 
     pub fn getresgid(out: *[3]u32) bool {
-        return c.getresgid(&out[0], &out[1], &out[2]) == 0;
+        if (builtin.os.tag != .macos) return c.getresgid(&out[0], &out[1], &out[2]) == 0;
+        const kp = self() orelse return false;
+        out.* = .{ kp.kp_eproc.e_pcred.p_rgid, c.getegid(), kp.kp_eproc.e_pcred.p_svgid };
+        return true;
+    }
+
+    fn self() ?c.struct_kinfo_proc {
+        var kp: c.struct_kinfo_proc = undefined;
+        var mib = [4]c_int{ c.CTL_KERN, c.KERN_PROC, c.KERN_PROC_PID, c.getpid() };
+        var len: usize = @sizeOf(c.struct_kinfo_proc);
+        if (c.sysctl(&mib, mib.len, &kp, &len, null, 0) != 0 or len != @sizeOf(c.struct_kinfo_proc)) return null;
+        return kp;
     }
 
     pub fn getgroups(buf: []u32) ?[]u32 {
@@ -27,7 +43,7 @@ pub const Libc = struct {
     }
 
     pub fn setgroups(groups: []const u32) bool {
-        return c.setgroups(groups.len, groups.ptr) == 0;
+        return c.setgroups(@intCast(groups.len), groups.ptr) == 0;
     }
 
     pub fn setegid(gid: u32) bool {

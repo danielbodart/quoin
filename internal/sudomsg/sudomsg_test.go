@@ -69,6 +69,23 @@ func TestTheMessageEncodesToTheGoldenBytesAndParsesBackFieldForField(t *testing.
 	}
 }
 
+// The darwin plugin builds the message in Zig, held to a copy of this
+// package's golden in sudo/testdata/sudomsg, inside the Zig package's root
+// where its tests can embed it. The copy is this one, byte for byte.
+func TestTheZigCopyOfTheGoldenIsThisPackages(t *testing.T) {
+	ours, err := os.ReadFile(filepath.Join("testdata", "message.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zigs, err := os.ReadFile(filepath.Join("..", "..", "sudo", "testdata", "sudomsg", "message.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ours, zigs) {
+		t.Fatal("sudo/testdata/sudomsg/message.bin is not internal/sudomsg/testdata/message.bin: copy it")
+	}
+}
+
 func TestAMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 	good, err := example(t).Marshal()
 	if err != nil {

@@ -254,6 +254,71 @@ quoin-sudo: the forwarded agent refused
 sudo: quoin_audit: unable to log accept event
 ```
 
+## macOS
+
+A Mac takes remote mode alone, from nix-darwin:
+
+```nix
+imports = [ quoin.darwinModules.sudo ];
+services.quoin.sudo = {
+  enable = true;
+  remoteKeys = [ "ecdsa-sha2-nistp256 AAAA… alice@laptop" ];
+};
+```
+
+A Mac has no galley of its own to ask and is reached over ssh, so there is
+no local mode and no gate daemon: remote mode reads no rules, and the
+plugin (`sudo/quoin_sudo_darwin.zig`) does the gate's remote half in sudo's
+own process. It is the Linux plugin and gate, step for step:
+
+- **open** arms on the Linux conditions, in the Linux order: the gated
+  user, not `-l` or `-v`, no tty, a chain with the user's `sshd-session`
+  under root's (read with `sysctl` where Linux reads `/proc`), `remote`,
+  an absolute `SSH_AUTH_SOCK`, and listed keys that parse. Any miss is
+  stock sudo.
+- **PAM**: `quoin_sudo_pam.so`, `sufficient`, first in `sudo_local` (macOS
+  has no `pam_exec`). The Linux helper's tests, then, where it asks the
+  gate whether its sudo checked in, it asks the plugin in the same sudo
+  whether it armed. A plugin that is not loaded or not armed is the
+  password.
+- **accept** builds `quoin-sudo-v1` from sudoers' `command_info`, byte for
+  byte as `internal/sudomsg` (`sudo/sudomsg.zig`, held to the Go golden),
+  has the forwarded agent sign it as the invoking user, and verifies the
+  signature itself. A refusal and every failure -- no agent, a hang-up,
+  garbage, no listed key, a bad signature -- refuse the sudo, as the gate
+  does; none falls back to the password. Nothing waits on a timer.
+
+The listed keys are nistp256 or ed25519, the two Zig's std verifies; a
+line of any other type fails the file, and remote mode is off. The module
+adds `Defaults noninteractive_auth` and `Defaults timestamp_type=tty`, as
+on Linux, so `sudo -n` reaches the gate and a no-tty sudo leaves no ticket;
+it refuses another `timestamp_type`. The danger catalogue is not ported
+yet: a Mac's message has no level and no reasons.
+
+`sudo.conf` names the plugin from the store with `keys=` the listed keys'
+file. A `Plugin` line sudo cannot load makes every sudo fatal, so the
+activation runs `quoin-sudo-check-plugin PLUGIN SYMBOL PAM_MODULE KEYS`
+first, before `/etc` changes, and a failure fails the switch:
+
+- the plugin and the module root-owned, not group- or world-writable, and
+  their code signatures verifying (`codesign --verify --strict`);
+- the keys parsing;
+- `quoin-sudo-load`, arm64e as Apple's sudo is, with Apple's libpam
+  loaded as sudo has it, loading both with every symbol bound, the symbol an
+  audit plugin of sudo's API major, a sudo the plugin cannot arm for
+  (a terminal's, another user's, remote off) opened, unarmed and accepted,
+  and the module ignoring a call with no handle.
+
+Decision records go to `/var/log/quoin-sudo.log`, one line each, with the
+gate's fields: the nonce, the host key fingerprints, user, runas, cwd,
+argv, the key that signed, `outcome` and `source`. Not the unified log:
+`os_log` and `syslog` read their format string from the plugin's dylib,
+which logd's sandbox may not, and every record reads `<compose failure>`.
+
+**Rollback.** `services.quoin.sudo.enable = false` and a switch. A
+`Plugin` line sudo cannot load fails every sudo, a terminal's too, which
+is what the pre-flight is for; past it, recovery is at the console.
+
 ## Journal
 
 ```

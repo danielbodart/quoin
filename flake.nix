@@ -7,6 +7,7 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      darwinSystems = nixpkgs.lib.genAttrs [ "aarch64-darwin" ];
 
       # The MAJOR only, which is the one part of the version that is a decision
       # rather than a count -- 0 says the interfaces are still moving.
@@ -122,13 +123,25 @@
         key = "github:danielbodart/quoin#nixosModules.policy";
         imports = [ (import ./nix/policy.nix self) ];
       };
+      # quoin-sudo's remote mode on a Mac, for nix-darwin: the plugin and
+      # its PAM module approve a no-tty sudo over ssh by the forwarded
+      # agent's signature, as the Linux gate's remote mode does.
+      darwinModules.sudo = {
+        key = "github:danielbodart/quoin#darwinModules.sudo";
+        imports = [ (import ./nix/sudo-darwin.nix self) ];
+      };
       # All three; each is still off until its enable is set.
       nixosModules.default = {
         key = "github:danielbodart/quoin#nixosModules.default";
         imports = [ self.nixosModules.signer self.nixosModules.sudo self.nixosModules.policy ];
       };
 
-      packages = forAllSystems (system:
+      # macOS has quoin-sudo's darwin build alone: its signer, courier and
+      # gate are Linux's (TPM, /proc, systemd), and a Mac's sudo is approved
+      # from the Linux machine the person is at.
+      packages = darwinSystems (system: {
+        quoin-sudo-plugin = (import ./nix/sudo-zig-darwin.nix { pkgs = nixpkgs.legacyPackages.${system}; }).package;
+      }) // forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
         rec {
           quoin = mkQuoin pkgs;
@@ -157,7 +170,12 @@
           };
         });
 
-      checks = forAllSystems (system:
+      checks = darwinSystems (system: {
+        inherit (self.packages.${system}) quoin-sudo-plugin;
+        # The darwin Zig's unit tests, the plugin's from outside, lint and
+        # fmt, on the Mac they are built for.
+        sudo-zig = (import ./nix/sudo-zig-darwin.nix { pkgs = nixpkgs.legacyPackages.${system}; }).check;
+      }) // forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
           pkg = self.packages.${system}.quoin;
