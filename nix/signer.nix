@@ -34,7 +34,7 @@ let
       nativeBuildInputs = [ package ];
       config = builtins.toJSON ({
         inherit (cfg) forUser terminal sshsig loginSigners policySigners;
-        ssh = { inherit (cfg.ssh) hosts; };
+        ssh = { inherit (cfg.ssh) hosts forwardedThrough; };
       } // lib.optionalAttrs policy.courier.enable {
         # A project's signed policy, read through the courier for the
         # process that asks: its signer section over these settings, Always
@@ -81,9 +81,24 @@ in
         pattern matches: `*` alone is one label, `*` within a label any run
         of it (`*-ap`), and `**` as the first label one or more
         (`**.bodar.com`). A literal beats a pattern and a narrower pattern a
-        wider one. A forwarded sign, an unknown host key and a cut chain are
-        asked whatever this says. With services.quoin.policy.courier on, a
+        wider one. An unknown host key and a cut chain are asked whatever
+        this says, and so is a forwarded sign, unless it came through
+        ssh.forwardedThrough. With services.quoin.policy.courier on, a
         project's signed policy file merges its signer.ssh.hosts over these.
+      '';
+    };
+    ssh.forwardedThrough = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "dan-blade" "dan-desktop" "dan-mac" ];
+      description = ''
+        Hosts, by their name in /etc/ssh/ssh_known_hosts or a pattern as
+        ssh.hosts' names are, through which a forwarded sign is judged by
+        sshsig and ssh.hosts as a direct one: every forwarded bind on the
+        connection must be to one of them. The person's own machines, so a
+        commit signed or a push made in an ssh session to one is what it
+        would be here. Remote sudo and every other forwarded sign are still
+        asked. None by default: every forwarded sign is asked.
       '';
     };
     loginSigners = mkOption {

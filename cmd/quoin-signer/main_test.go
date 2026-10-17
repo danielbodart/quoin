@@ -41,7 +41,8 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 	path := writeConfig(t, `{
 		"forUser": "dan", "terminal": "ask",
 		"sshsig": {"git": "allow", "file": "ask"},
-		"ssh": {"hosts": {"github.com": "allow", "gitlab.com": "ask", "*.example": "allow", "**.bodar.com": "ask"}},
+		"ssh": {"hosts": {"github.com": "allow", "gitlab.com": "ask", "*.example": "allow", "**.bodar.com": "ask"},
+			"forwardedThrough": ["dan-blade", "*-mac"]},
 		"policy": {"courier": "/run/quoin-courier/sock", "allowedSigners": "/etc/quoin/allowed_signers", "fileName": "chase.json"},
 		"loginSigners": ["proxy.service"], "policySigners": ["proxy.service", "helper.service"]
 	}`)
@@ -53,7 +54,8 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 		ForUser: "dan", Terminal: agentsrv.Ask,
 		SSHSIG: map[string]agentsrv.Rule{"git": agentsrv.Allow, "file": agentsrv.Ask},
 		SSH: sshConfig{Hosts: map[string]agentsrv.Rule{"github.com": agentsrv.Allow, "gitlab.com": agentsrv.Ask,
-			"*.example": agentsrv.Allow, "**.bodar.com": agentsrv.Ask}},
+			"*.example": agentsrv.Allow, "**.bodar.com": agentsrv.Ask},
+			ForwardedThrough: []string{"dan-blade", "*-mac"}},
 		Policy:       &policyConfig{Courier: "/run/quoin-courier/sock", AllowedSigners: "/etc/quoin/allowed_signers", FileName: "chase.json"},
 		LoginSigners: []string{"proxy.service"}, PolicySigners: []string{"proxy.service", "helper.service"},
 	}
@@ -82,6 +84,10 @@ func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
 		`{"forUser": "dan", "terminal": "allow", "ssh": {"hosts": {"a..b": "allow"}}}`,
 		`{"forUser": "dan", "terminal": "allow", "ssh": {"hosts": {"|1|c2FsdA==|aGFzaA==": "allow"}}}`,
 		`{"forUser": "dan", "terminal": "allow", "ssh": {"hosts": {"!evil": "allow"}}}`,
+		`{"forUser": "dan", "terminal": "allow", "ssh": {"forwardedThrough": [""]}}`,
+		`{"forUser": "dan", "terminal": "allow", "ssh": {"forwardedThrough": ["dan-blade,evil"]}}`,
+		`{"forUser": "dan", "terminal": "allow", "ssh": {"forwardedThrough": ["dan-blade", "dan-blade"]}}`,
+		`{"forUser": "dan", "terminal": "allow", "ssh": {"forwardedThrough": "dan-blade"}}`,
 		`{"forUser": "dan", "terminal": "allow", "policy": {"courier": "sock", "allowedSigners": "/a", "fileName": "chase.json"}}`,
 		`{"forUser": "dan", "terminal": "allow", "policy": {"courier": "/s", "allowedSigners": "/a/../b", "fileName": "chase.json"}}`,
 		`{"forUser": "dan", "terminal": "allow", "policy": {"courier": "/s", "allowedSigners": "/a", "fileName": "chase.json.sig"}}`,

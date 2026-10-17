@@ -46,6 +46,9 @@ type sshConfig struct {
 	// a pattern of names: * alone a label, * within one any run of it, **
 	// as the first label one or more.
 	Hosts map[string]agentsrv.Rule `json:"hosts"`
+	// ForwardedThrough names the hosts, or patterns of names as Hosts' keys
+	// are, through which a forwarded sign is judged as a direct one.
+	ForwardedThrough []string `json:"forwardedThrough"`
 }
 
 // loadConfig reads path strictly: an unknown or misspelt key, a second
@@ -96,6 +99,16 @@ func (c *config) validate() error {
 		if err := checkRule(r); err != nil {
 			return fmt.Errorf("ssh.hosts.%s: %w", name, err)
 		}
+	}
+	seen := map[string]bool{}
+	for _, name := range c.SSH.ForwardedThrough {
+		if err := agentsrv.CheckHostRule(name); err != nil {
+			return fmt.Errorf("ssh.forwardedThrough: %w", err)
+		}
+		if seen[name] {
+			return fmt.Errorf("ssh.forwardedThrough: %q is listed twice", name)
+		}
+		seen[name] = true
 	}
 	for k, units := range map[string][]string{"loginSigners": c.LoginSigners, "policySigners": c.PolicySigners} {
 		if err := checkUnits(units); err != nil {
@@ -177,10 +190,16 @@ const schema = `{
       "additionalProperties": false,
       "properties": {
         "hosts": {
-          "description": "A bound, direct userauth from any process to a host key listed under this name in /etc/ssh/ssh_known_hosts, or under a name this pattern matches: * alone is one label, * within a label any run of it, ** as the first label one or more. A literal beats a pattern and a narrower pattern a wider one. Never a forwarded sign.",
+          "description": "A bound, direct userauth from any process to a host key listed under this name in /etc/ssh/ssh_known_hosts, or under a name this pattern matches: * alone is one label, * within a label any run of it, ** as the first label one or more. A literal beats a pattern and a narrower pattern a wider one. A forwarded sign only through forwardedThrough.",
           "type": "object",
           "propertyNames": { "pattern": "^[^.,\\s?!|][^,\\s?!]*$" },
           "additionalProperties": { "$ref": "#/$defs/rule" }
+        },
+        "forwardedThrough": {
+          "description": "Hosts, by name in /etc/ssh/ssh_known_hosts or a pattern as hosts' keys are, through which a forwarded sign is judged by sshsig and hosts as a direct one: every forwarded bind must be to one of them. Remote sudo and other forwarded signs are still asked. None by default.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[^.,\\s?!|][^,\\s?!]*$" }
         }
       }
     },

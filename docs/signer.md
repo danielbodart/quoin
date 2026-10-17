@@ -130,10 +130,25 @@ running it sets both to `[ "frisket.service" ]`. They are two lists because
 they are two trusts: a unit that logs a session into machines need not be
 one whose word that a person approved a change is taken.
 
-Beyond these, a forwarded sign (`ssh -A`) is always asked, and nothing is
-refused unasked but an SSHSIG in a `quoin-policy` namespace, which `check`
+Beyond these, a forwarded sign (`ssh -A`) is asked unless it came through
+`ssh.forwardedThrough` (below), and nothing is refused unasked but an SSHSIG in a `quoin-policy` namespace, which `check`
 also refuses as an `sshsig` key, and a `policy-sign` from another user
 namespace.
+
+### Your own machines
+
+**`ssh.forwardedThrough`** names hosts, by their name in `ssh_known_hosts`
+or a pattern as `ssh.hosts`' names are: your own machines. A forwarded sign
+whose every forwarded session-bind is to one of them is judged by `sshsig`
+and `ssh.hosts` as a direct sign is (5 and 6 below), so in an `ssh -A`
+session to one, a commit signature and a push to GitHub are what they would
+be here: signed with no question, and journaled with `"forwarded":true`. A
+hop through any other host, an unknown host key, remote sudo, and every
+sign those rules do not allow are still asked. Only the host's rules apply:
+the asking program is the ssh here, so its project says nothing about what
+is signed at the far end. A machine there with a key of its own could sign
+the same things unasked with it, so this widens nothing a session to it did
+not already reach. None by default.
 
 ## What is asked
 
@@ -148,15 +163,16 @@ In order, the first that applies:
 3. A login from the main process of a unit in `loginSigners`: signed.
 4. A tab's shell running ssh, git, scp, sftp or rsync, to a known host,
    not forwarded: `terminal`.
-5. Any program's login, not forwarded and its process chain not cut
-   short, to a host key `ssh_known_hosts` lists under a name whose most
+5. Any program's login, not forwarded (or forwarded only through
+   `ssh.forwardedThrough`) and its process chain not cut short, to a host key `ssh_known_hosts` lists under a name whose most
    specific `ssh.hosts` rule is `allow`: signed, as source `host`, or
    `project` when the rule is the project's. The rules are the host's with
    the project's `signer` section merged over them (RFC 7396: a project may
    add a rule, set one to `ask`, or delete one with `null`). A hashed
    entry, a pattern in `ssh_known_hosts` itself, or the same name with
    another key never matches.
-6. An SSHSIG, not forwarded: its namespace's value, the project's merged
+6. An SSHSIG, not forwarded (or forwarded only through
+   `ssh.forwardedThrough`): its namespace's value, the project's merged
    over the host's (`sshsig`, or `project`).
 7. A live grant for this process, host key, key and forwarding: signed.
 8. Otherwise: asked. With no galley to ask, refused.
@@ -169,7 +185,7 @@ and its `signer` section sets only `ssh.hosts` and `sshsig`; otherwise it is
 ignored, with one `project policy ignored` line per file, and the decision
 is as if there were none. So is a cut chain, a chain with no anchor, and a
 courier that is down or not configured. A forwarded sign is never covered
-by a project, as by the host's rules.
+by a project, only by the host's rules through `ssh.forwardedThrough`.
 
 A grant covers the asking program (a claude, a tab's shell) until the time
 you picked; a forwarded question's grant covers forwarded signs only.

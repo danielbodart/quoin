@@ -69,6 +69,14 @@ type Server struct {
 	// answered Always in a question of its own that showed the change. It
 	// may send nothing but that, and nobody else may send approved.
 	PolicySigners []string
+	// ForwardedThrough names hosts, as the known hosts file lists them or
+	// by a pattern of names as Hosts' keys are: a forwarded sign whose every
+	// forwarded bind is to one of these is judged by SSHSIG and Hosts as a
+	// direct one is. The person's own machines, so a commit signed or a
+	// push made in an ssh session to one of them is what it would be at
+	// this one. Remote sudo and every other forwarded sign are still asked.
+	// None by default: every forwarded sign is asked.
+	ForwardedThrough []string
 
 	who          func(*net.UnixConn) (*peer.Requester, error)
 	loginSigner  func(*peer.Requester) bool
@@ -364,10 +372,40 @@ func (c *conn) remoteSudo(req *request, data []byte) (*request, error) {
 	return nil, fmt.Errorf("remote sudo bound to %s, not one of the message's host keys", ssh.FingerprintSHA256(last.hostKey))
 }
 
+// throughOwn is whether every forwarded bind on the connection is to a
+// host ForwardedThrough names, so a forwarded sign is judged as a direct
+// one. A bind to a host key the known hosts file does not list, or lists
+// under no such name, makes it false.
+func (c *conn) throughOwn() bool {
+	if len(c.s.ForwardedThrough) == 0 {
+		return false
+	}
+	through := make(map[string]Rule, len(c.s.ForwardedThrough))
+	for _, n := range c.s.ForwardedThrough {
+		through[n] = Allow
+	}
+	for _, b := range c.binds {
+		if b.fwd && hostsAllow(through, c.hostNames(b.hostKey)) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *conn) decide(req *request) verdict {
 	r := c.r
 	if req.class == classRemoteSudo || req.class == classForwarded {
 		return c.ask(req)
+	}
+	direct := !req.fwd || c.throughOwn()
+	// A forwarded sign's asking program is the ssh here, not the one at the
+	// far end, so its project says nothing about what is signed there: the
+	// host's rules alone judge it.
+	rules := func() (hosts, sshsig map[string]Rule) {
+		if req.fwd {
+			return c.s.rules(nil)
+		}
+		return c.s.rules(c.project(req))
 	}
 	if (req.class == classBound || req.class == classUnbound) && c.s.loginSigner(r) {
 		return verdict{sign: true, source: "unit"}
@@ -375,14 +413,14 @@ func (c *conn) decide(req *request) verdict {
 	if req.class == classBound && !req.fwd && r.Terminal && !r.Cut && req.known && c.s.Terminal == Allow {
 		return verdict{sign: true, source: "terminal"}
 	}
-	if req.class == classBound && !req.fwd && !r.Cut && req.known {
-		hosts, _ := c.s.rules(c.project(req))
+	if req.class == classBound && direct && !r.Cut && req.known {
+		hosts, _ := rules()
 		if k := hostsAllow(hosts, req.names); k != "" {
 			return verdict{sign: true, source: c.origin(req.proj, k, func(l *layer) map[string]bool { return l.hosts })}
 		}
 	}
-	if req.class == classSSHSIG && !req.fwd {
-		_, sshsig := c.s.rules(c.project(req))
+	if req.class == classSSHSIG && direct {
+		_, sshsig := rules()
 		if sshsig[req.namespace] == Allow {
 			src := c.origin(req.proj, req.namespace, func(l *layer) map[string]bool { return l.sshsig })
 			if src == "host" {

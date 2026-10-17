@@ -16,8 +16,9 @@ about the rest.
   can copy them. It signs without asking for a terminal tab ssh-ing to a
   known host, for a login to a host you allow, here or in the project's
   signed policy, for git's commit signatures, and for a unit you trust by
-  name; anything else -- a claude's `git push`, a forwarded sign, a raw
-  SSHSIG -- is a galley question: Allow once, Allow for a time you pick,
+  name, and does the same for a sign forwarded from an ssh session on a
+  machine you name as your own; anything else -- a claude's `git push`,
+  another forwarded sign, a raw SSHSIG -- is a galley question: Allow once, Allow for a time you pick,
   Refuse, or, from a project, Always, which signs the rule into its policy
   file. See [docs/signer.md](docs/signer.md).
 - **quoin-sudo** gates sudo when no terminal is asking. Each such sudo is a

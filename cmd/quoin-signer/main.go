@@ -115,7 +115,7 @@ func runServe(argv []string) error {
 	s := &agentsrv.Server{
 		User: cfg.ForUser, UID: uid, Terminal: cfg.Terminal, SSHSIG: cfg.SSHSIG, Hosts: cfg.SSH.Hosts,
 		KnownHosts: knownHosts, Grants: grant.New(), Log: log,
-		LoginSigners: cfg.LoginSigners, PolicySigners: cfg.PolicySigners,
+		LoginSigners: cfg.LoginSigners, PolicySigners: cfg.PolicySigners, ForwardedThrough: cfg.SSH.ForwardedThrough,
 	}
 	if p := cfg.Policy; p != nil {
 		s.Policy = &agentsrv.Policy{Courier: p.Courier, AllowedSigners: p.AllowedSigners, FileName: p.FileName, Home: u.HomeDir}
@@ -129,7 +129,8 @@ func runServe(argv []string) error {
 		}
 	}
 	log.Info("quoin-signer serve", "config", *path, "user", cfg.ForUser, "keys", len(s.Keys),
-		"terminal", cfg.Terminal, "sshsig", cfg.SSHSIG, "hosts", cfg.SSH.Hosts, "policy", cfg.Policy,
+		"terminal", cfg.Terminal, "sshsig", cfg.SSHSIG, "hosts", cfg.SSH.Hosts,
+		"forwardedThrough", cfg.SSH.ForwardedThrough, "policy", cfg.Policy,
 		"loginSigners", cfg.LoginSigners, "policySigners", cfg.PolicySigners)
 	return s.Serve(ln)
 }

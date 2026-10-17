@@ -275,7 +275,8 @@
               settingsOf = c: builtins.fromJSON c.config.environment.etc."quoin/signer.json".source.config;
               takes = units: (builtins.tryEval (builtins.deepSeq (eval { services.quoin.signer.loginSigners = units; }).config.services.quoin.signer.loginSigners true)).success;
               wrong = builtins.filter (x: x.got != x.want) [
-                { case = "none by default"; got = with settingsOf (eval { }); [ loginSigners policySigners ]; want = [ [ ] [ ] ]; }
+                { case = "none by default"; got = with settingsOf (eval { }); [ loginSigners policySigners ssh.forwardedThrough ]; want = [ [ ] [ ] [ ] ]; }
+                { case = "own machines"; got = (settingsOf (eval { services.quoin.signer.ssh.forwardedThrough = [ "dan-blade" "*-mac" ]; })).ssh.forwardedThrough; want = [ "dan-blade" "*-mac" ]; }
                 { case = "fifteen bytes"; got = takes [ "abcdefghijklmno.service" ]; want = true; }
                 { case = "sixteen bytes"; got = takes [ "abcdefghijklmnop.service" ]; want = false; }
                 { case = "not a service"; got = takes [ "proxy.socket" ]; want = false; }
