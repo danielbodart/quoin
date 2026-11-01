@@ -149,6 +149,31 @@ and asks, and why, is in [docs/signer.md](docs/signer.md),
 design, written while these lived in frisket, is
 [docs/signer-and-sudo-plan.md](docs/signer-and-sudo-plan.md).
 
+## Channels
+
+quoin ships through one channel, the distro one: the Nix packages and the
+NixOS and nix-darwin modules of this flake, built by nixpkgs (nixos-26.05,
+Go 1.27) and pushed to the `danielbodart` Cachix cache. There is no Docker
+image or tarball: the gatekeepers are only of use wired into a host by the
+modules. Every push to trunk that passes CI and changes what a consumer
+builds is released as a tag, `vMAJOR.COUNT.RUN`; the Go packages are
+consumed as the module at that tag. Every dependency, flake inputs, galley's
+release, mise's Go and the Go modules, moves once a week, Sunday 21:23 UTC,
+gated on everything CI runs and committed straight to trunk
+(`.github/workflows/update.yml`).
+
+```nix
+inputs.quoin = {
+  url = "github:danielbodart/quoin/vX.Y.Z"; # a release tag
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+# imports = [ inputs.quoin.nixosModules.default ];
+```
+
+```console
+$ go get github.com/danielbodart/quoin@latest
+```
+
 ## Development
 
 mise pins the toolchain (`mise.toml`); `mise run check` is the dev loop and
