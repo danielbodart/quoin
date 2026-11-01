@@ -63,7 +63,11 @@ jobs:
         run: |
           moved=()
           gomods() { go mod edit -json | jq -r '.Require[] | "\(.Path) \(.Version)"' | sort; }
-          ownver() { go mod edit -json | jq -r --arg m "github.com/danielbodart/$1" '.Require[] | select(.Path == $m) | .Version'; }
+          # The tag go.mod requires, or else the one flake.nix's url names.
+          ownver() {
+            go mod edit -json | jq -r --arg m "github.com/danielbodart/$1" '.Require[] | select(.Path == $m) | .Version' | grep . ||
+              sed -n "s|.*url = \"github:danielbodart/$1/\(v[^\"]*\)\";.*|\1|p" flake.nix
+          }
 
           # 1. The flake's inputs, then my own repos to their latest tags.
           nix flake update 2>&1 | tee update.log
@@ -103,6 +107,7 @@ jobs:
           echo "moved=${list:-dependencies}" >> "$GITHUB_OUTPUT"
 
       # 5. The gate: what CI runs, mise's check and every Nix check.
+      # As CI's, so the namespace tests run rather than skip.
       - name: Let unprivileged user namespaces hold capabilities
         if: steps.update.outputs.moved
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
