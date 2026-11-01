@@ -1,7 +1,9 @@
 {
   description = "The host's gatekeepers: SSH keys in the TPM, sudo with no terminal, and a project's signed policy, asked through galley";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # nixos-26.05, the release nix-config builds every host from, so what this
+  # flake builds and pushes to the cache is the derivation a host builds.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs = { self, nixpkgs }:
     let
@@ -9,13 +11,17 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
       darwinSystems = nixpkgs.lib.genAttrs [ "aarch64-darwin" ];
 
-      # The MAJOR only, which is the one part of the version that is a decision
-      # rather than a count -- 0 says the interfaces are still moving.
-      # scripts/version.sh derives the release name (major.commit-count.run-
-      # number) from the repository, and a build from a store path has no
-      # repository to count, so the two are deliberately different things: this
-      # names the package, that names the artefact CI publishes.
-      version = nixpkgs.lib.fileContents ./VERSION;
+      # nixpkgs' name for a build from a commit rather than a release:
+      # 0-unstable-YYYY-MM-DD, the date of the commit. A release is a tag
+      # named by scripts/version.sh, which needs the repository to count, and
+      # a build from a store path has none.
+      version =
+        let d = self.lastModifiedDate or "19700101"; in
+        "0-unstable-${builtins.substring 0 4 d}-${builtins.substring 4 2 d}-${builtins.substring 6 2 d}";
+
+      # Go's major.minor, the one mise.toml pins: both channels compile with
+      # the same language version.
+      go = pkgs: pkgs.go_1_27;
 
       # One package, all four binaries: quoin, the person's own tool for a
       # project's policy file, and the three gatekeepers, quoin-signer,
@@ -25,7 +31,7 @@
       # derivation with doCheck on: everything built on the package -- each
       # VM test, and a host's system -- waits only for the compile, not for
       # the tests as well.
-      mkQuoin = pkgs: pkgs.buildGoModule {
+      mkQuoin = pkgs: (pkgs.buildGoModule.override { go = go pkgs; }) {
         pname = "quoin";
         inherit version;
         # The Go module alone, so that a change to the docs, the modules or
@@ -53,7 +59,7 @@
         # the gate put to galley; go-tpm with go-tpm-keyfiles for the signer's
         # TPM keys; and rapid for the property tests. vendorHash = null is a
         # nice property and never a security one.
-        vendorHash = "sha256-tUWnEcMV7O1AaxhtmssCY/m6HiY6gLQlppJUksehPMU=";
+        vendorHash = "sha256-f4UaFsZHqBiyltvE996a+BxYJPRzzopuT6s3+xpkY9s=";
 
         # A STATIC BINARY. Each gatekeeper runs as a systemd unit with
         # ProtectSystem=strict, and the sudo gate answers a plugin that sudo
@@ -162,7 +168,7 @@
             # swtpm and ssh-keygen, for the TPM and SSHSIG tests, which skip
             # without them unless QUOIN_REQUIRE_SWTPM or
             # QUOIN_REQUIRE_SSH_KEYGEN says to fail; zig, for sudo/.
-            packages = [ pkgs.go pkgs.gopls pkgs.golangci-lint pkgs.swtpm pkgs.openssh pkgs.zig_0_15 ];
+            packages = [ (go pkgs) pkgs.gopls pkgs.golangci-lint pkgs.swtpm pkgs.openssh pkgs.zig_0_15 ];
             # The same setting the package builds with, so a `go build` in the
             # shell produces the same binary the flake does rather than a
             # dynamically linked one that works here and nowhere else.
@@ -389,7 +395,7 @@
           # Formatting as a gate rather than a habit: this is one repository
           # with one formatter and no argument to have about it.
           gofmt = pkgs.runCommand "gofmt"
-            { nativeBuildInputs = [ pkgs.go ]; }
+            { nativeBuildInputs = [ (go pkgs) ]; }
             ''
               cd ${./.}
               unformatted=$(gofmt -l .)
@@ -443,12 +449,13 @@
           # a stand-in peer unit, in a VM.
           policy = pkgs.testers.runNixOSTest (import ./tests/policy.nix { inherit self; });
 
-          # The version script decides what every release is called, so it is
+          # The version script decides what every release is called, and pin.sh
+          # and vendor-hash.sh what the weekly update commits, so they are
           # gated by the same check that gates the release.
           shellcheck = pkgs.runCommand "shellcheck"
             { nativeBuildInputs = [ pkgs.shellcheck ]; }
             ''
-              shellcheck ${./scripts/version.sh}
+              shellcheck ${./scripts/version.sh} ${./scripts/pin.sh} ${./scripts/vendor-hash.sh}
               touch $out
             '';
         });
