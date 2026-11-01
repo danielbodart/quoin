@@ -7,8 +7,10 @@
 # module of mine this one requires, to its latest release tag
 # (scripts/pin.sh), a tag only existing for a commit its CI passed; each
 # mise.toml tool to the latest patch of its pinned minor (a new minor moves
-# by hand, with the nixpkgs attribute flake.nix builds with); and every Go
-# dependency (go get -u), with flake.nix's vendorHash worked out again.
+# by hand, with the nixpkgs attribute flake.nix builds with); every Go
+# dependency (go get -u), with flake.nix's vendorHash worked out again; and
+# sudo/build.zig.zon's minish and zwanzig to their latest release tags, with
+# nix/sudo-zig.nix's zigDeps hash (scripts/zig-deps.sh).
 #
 # The gate is everything CI runs, on this one runner rather than CI's legs:
 # slower, but nobody is waiting on it. Only if it passes is anything
@@ -107,6 +109,11 @@ jobs:
           if ! git diff --quiet go.sum; then scripts/vendor-hash.sh; fi
           mapfile -t mods < <(comm -13 <(echo "$before") <(gomods) | cut -d' ' -f1 | grep -v '^github.com/danielbodart/' || true)
           moved+=("${mods[@]}")
+
+          # 3b. The Zig plugin's dependencies, and the zigDeps hash they make.
+          zigs=$(scripts/zig-deps.sh)
+          mapfile -t zigs <<<"$zigs"
+          moved+=("${zigs[@]}")
 
           # 4.
           if git diff --quiet; then

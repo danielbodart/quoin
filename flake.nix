@@ -449,13 +449,13 @@
           # a stand-in peer unit, in a VM.
           policy = pkgs.testers.runNixOSTest (import ./tests/policy.nix { inherit self; });
 
-          # The version script decides what every release is called, and pin.sh
-          # and vendor-hash.sh what the weekly update commits, so they are
-          # gated by the same check that gates the release.
+          # The version script decides what every release is called, and pin.sh,
+          # vendor-hash.sh and zig-deps.sh what the weekly update commits, so
+          # they are gated by the same check that gates the release.
           shellcheck = pkgs.runCommand "shellcheck"
             { nativeBuildInputs = [ pkgs.shellcheck ]; }
             ''
-              shellcheck ${./scripts/version.sh} ${./scripts/pin.sh} ${./scripts/vendor-hash.sh}
+              shellcheck ${./scripts/version.sh} ${./scripts/pin.sh} ${./scripts/vendor-hash.sh} ${./scripts/zig-deps.sh}
               touch $out
             '';
         });

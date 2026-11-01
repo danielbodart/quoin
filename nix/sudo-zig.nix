@@ -31,7 +31,7 @@ let
     };
 
   # On a build.zig.zon change: hash = lib.fakeHash, build checks.sudo-zig,
-  # copy `got:`.
+  # copy `got:`; scripts/zig-deps.sh does so for the weekly update.
   zigDeps = zig.fetchDeps {
     pname = "quoin-sudo";
     version = "0";
