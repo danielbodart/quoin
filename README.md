@@ -151,10 +151,15 @@ design, written while these lived in frisket, is
 
 ## Development
 
+mise pins the toolchain (`mise.toml`); `mise run check` is the dev loop and
+CI's fast job, the flake's checks the rest.
+
 ```console
-$ nix develop          # go, gopls, golangci-lint, swtpm, ssh-keygen, zig
+$ mise run check       # gofmt, go vet, go test ./...
+$ mise run build       # the binaries, into bin/
 $ go test ./...        # QUOIN_REQUIRE_SWTPM=1 and QUOIN_REQUIRE_SSH_KEYGEN=1
                        # fail rather than skip without them
+$ nix develop          # go, gopls, golangci-lint, swtpm, ssh-keygen, zig
 $ nix flake check      # build, tests with and without -race, vet, gofmt,
                        # the Zig's tests and analysis, the modules'
                        # evaluation, and the signer, sudo-gate, sudo-remote
