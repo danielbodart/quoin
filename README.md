@@ -151,16 +151,24 @@ design, written while these lived in frisket, is
 
 ## Channels
 
-quoin ships through one channel, the distro one: the Nix packages and the
-NixOS and nix-darwin modules of this flake, built by nixpkgs (nixos-26.05,
-Go 1.27) and pushed to the `danielbodart` Cachix cache. There is no Docker
-image or tarball: the gatekeepers are only of use wired into a host by the
-modules. Every push to trunk that passes CI and changes what a consumer
-builds is released as a tag, `vMAJOR.COUNT.RUN`; the Go packages are
-consumed as the module at that tag. Every dependency, flake inputs, galley's
-release, mise's Go and the Go modules, moves once a week, Sunday 21:23 UTC,
-gated on everything CI runs and committed straight to trunk
-(`.github/workflows/update.yml`).
+- **Nix**: a flake input (with `inputs.nixpkgs.follows = "nixpkgs"`) at a
+  release tag, `vMAJOR.COUNT.RUN`: packages `quoin` (default) and
+  `quoin-sudo-plugin`, built by nixpkgs (nixos-26.05, Go 1.27, Zig 0.15) and
+  in the `danielbodart` Cachix cache; `nixosModules.default` (the signer,
+  the sudo gate and the policy), each also on its own, and
+  `darwinModules.sudo`.
+- **Go module**: `github.com/danielbodart/quoin` at the same tag, which
+  frisket and chase compile against.
+- Not shipped: Docker — the gatekeepers are only of use wired into a host
+  by the modules.
+- Not shipped: Tarball + systemd — likewise; the units are the modules'.
+
+Updated weekly (Sunday 21:23 UTC): the flake's inputs, galley's release,
+mise's tools (by patch), the Go modules and the Zig plugin's minish and
+zwanzig (`.github/workflows/update.yml`), committed to trunk only once
+everything CI runs passes. A release is cut when the Go module, the flake
+and its modules (`flake.nix`, `nix/`) or `VERSION` changed (`RELEASE_PATHS`
+in `mise.toml`): the tag is what consumers pin.
 
 ```nix
 inputs.quoin = {
@@ -180,8 +188,8 @@ mise pins the toolchain (`mise.toml`); `mise run check` is the dev loop and
 CI's fast job, the flake's checks the rest.
 
 ```console
-$ mise run check       # gofmt, go vet, go test ./...
-$ mise run build       # the binaries, into bin/
+$ mise run check       # gofmt, go vet, go test ./..., shellcheck
+$ mise run build       # nix build of quoin's packages, as a host installs them
 $ go test ./...        # QUOIN_REQUIRE_SWTPM=1 and QUOIN_REQUIRE_SSH_KEYGEN=1
                        # fail rather than skip without them
 $ nix develop          # go, gopls, golangci-lint, swtpm, ssh-keygen, zig
