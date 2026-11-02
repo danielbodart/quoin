@@ -49,7 +49,7 @@ done
 $moved || exit 0
 
 fake=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-old=$(sed -n '/zigDeps = zig.fetchDeps/,/};/s/.*hash = "\(sha256-[^"]*\)";.*/\1/p' "$deps")
+old=$(sed -n '/zigDeps = zig.fetchDeps/,/^  };/s/.*hash = "\(sha256-[^"]*\)";.*/\1/p' "$deps")
 if [ "$(wc -l <<<"$old")" -ne 1 ] || [ -z "$old" ]; then
 	echo "zig-deps: $deps must have exactly one zigDeps hash" >&2
 	exit 1
