@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Moves each of sudo/build.zig.zon's dependencies to its upstream's latest
 # release tag, by `zig fetch --save`, and works nix/sudo-zig.nix's zigDeps
-# hash out again from them: builds the plugin with lib.fakeHash and writes
+# hash out again from them: builds checks.sudo-zig with lib.fakeHash and writes
 # back the hash Nix reports. A dependency whose tags are named after the Zig
 # they build with (zwanzig's v0.15.x, for Zig 0.15) moves within that minor
 # only, as mise's tools move by patch: a new Zig moves by hand, with
@@ -55,9 +55,14 @@ if [ "$(wc -l <<<"$old")" -ne 1 ] || [ -z "$old" ]; then
 	exit 1
 fi
 sed -i "s|$old|$fake|" "$deps"
-got=$(nix build --no-link .#quoin-sudo-plugin 2>&1 | sed -n 's/.*got: *//p' || true)
+# Only checks.sudo-zig (-Ddev=true) takes zigDeps: the plugin itself fetches
+# nothing, so building it would never report the hash.
+system=$(nix eval --impure --raw --expr builtins.currentSystem)
+out=$(nix build --no-link ".#checks.$system.sudo-zig" 2>&1 || true)
+got=$(sed -n 's/.*got: *//p' <<<"$out")
 if [ -z "$got" ]; then
 	sed -i "s|$fake|$old|" "$deps"
+	tail -n 30 <<<"$out" >&2
 	echo "zig-deps: no hash came out of the build; zigDeps is left as it was" >&2
 	exit 1
 fi
