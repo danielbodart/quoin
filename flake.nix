@@ -59,7 +59,7 @@
         # the gate put to galley; go-tpm with go-tpm-keyfiles for the signer's
         # TPM keys; and rapid for the property tests. vendorHash = null is a
         # nice property and never a security one.
-        vendorHash = "sha256-4OHUY43dnqU1rQTA/T4tkZlEhq6kCdxmJRDA04LYfyw=";
+        vendorHash = "sha256-PDcazj7zRa15vSMGBqmqSGX8QgrryNTxbh26ZKgOQrs=";
 
         # A STATIC BINARY. Each gatekeeper runs as a systemd unit with
         # ProtectSystem=strict, and the sudo gate answers a plugin that sudo
