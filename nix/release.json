@@ -1,0 +1,57 @@
+{
+  "version": "0.102.29",
+  "assets": {
+    "x86_64-linux": {
+      "quoin": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-0.102.29-linux-amd64",
+        "hash": "sha256-n+2vYK+f4sz9CiIzBeMGZa8UBf5xiXWVb8Ao7Gj7QzY="
+      },
+      "quoin-signer": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-signer-0.102.29-linux-amd64",
+        "hash": "sha256-XeJhEGNQ78V+bUFuLQ77Y7l4MSEZZornvUQwD3z/ERw="
+      },
+      "quoin-sudo": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-sudo-0.102.29-linux-amd64",
+        "hash": "sha256-VOL82tqstYEQ7iMTTV1e8Rja13/gIvcTWd4S2QcxNxE="
+      },
+      "quoin-courier": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-courier-0.102.29-linux-amd64",
+        "hash": "sha256-fX5pNRq5lhzmGFgNr5r/HrV7RX4LQltfMKAwD0X0bcU="
+      },
+      "fakegalley": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/fakegalley-0.102.29-linux-amd64",
+        "hash": "sha256-ChPGuS0fEhaU6OPBzvcGLdW91JapUHcIIJ6M37I/yqc="
+      },
+      "agenttamper": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/agenttamper-0.102.29-linux-amd64",
+        "hash": "sha256-ocKmVwATFTmRSJMSj3CuKrdJ6ovEev128rD3XWOK8PM="
+      }
+    },
+    "aarch64-linux": {
+      "quoin": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-0.102.29-linux-arm64",
+        "hash": "sha256-NT+dW4Sa6sG83csFZhpcKBIcqcWZE9SOcp2hdJ0q/bY="
+      },
+      "quoin-signer": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-signer-0.102.29-linux-arm64",
+        "hash": "sha256-ZeWsAYdEIFfYyCOaf+kZsP3alN4h6HgrSV+k4E14q9A="
+      },
+      "quoin-sudo": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-sudo-0.102.29-linux-arm64",
+        "hash": "sha256-uPCM5hoYIb51c+iVJxinDkxf3UGJxvOhirSNkvZOe8A="
+      },
+      "quoin-courier": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/quoin-courier-0.102.29-linux-arm64",
+        "hash": "sha256-xTdnvWP9E6nHDnvA0948dWLJrpIpHK7LK/kxAMSZfgs="
+      },
+      "fakegalley": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/fakegalley-0.102.29-linux-arm64",
+        "hash": "sha256-cjNHHckV+lAIldiD7Rw3wWdQNBltpcS2rqwtgEZH+Gw="
+      },
+      "agenttamper": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.102.29/agenttamper-0.102.29-linux-arm64",
+        "hash": "sha256-QL/XW1vpv4/yYUDgeEPFjqNc5Z5QBuKfsv3cAEB7ZUk="
+      }
+    }
+  }
+}
