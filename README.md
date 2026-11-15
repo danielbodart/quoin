@@ -152,11 +152,21 @@ design, written while these lived in frisket, is
 ## Channels
 
 - **Nix**: a flake input (with `inputs.nixpkgs.follows = "nixpkgs"`) at a
-  release tag, `vMAJOR.COUNT.RUN`: packages `quoin` (default) and
-  `quoin-sudo-plugin`, built by nixpkgs (nixos-26.05, Go 1.27, Zig 0.15) and
-  in the `danielbodart` Cachix cache; `nixosModules.default` (the signer,
-  the sudo gate and the policy), each also on its own, and
-  `darwinModules.sudo`.
+  release tag, `vMAJOR.COUNT.RUN`: packages `quoin` (default: `quoin`,
+  `quoin-signer`, `quoin-sudo` and `quoin-courier`) and the test tools
+  `fakegalley` and `agenttamper`, which are the release's own static
+  binaries, fetched by hash, not built again; `quoin-sudo-plugin`, built
+  from source by nixpkgs (nixos-26.05, Zig 0.15) against the host's sudo and
+  PAM, and in the `danielbodart` Cachix cache; `nixosModules.default` (the
+  signer, the sudo gate and the policy), each also on its own, and
+  `darwinModules.sudo`. Only a release tag has the Go packages: its own
+  commit, a child of the released trunk commit, adds `nix/release.json`
+  (each binary's URL and hash), so trunk has none, and pinning trunk is an
+  error.
+- **Binaries**: each release carries `quoin`, `quoin-signer`, `quoin-sudo`,
+  `quoin-courier`, `fakegalley` and `agenttamper` for linux amd64 and arm64,
+  static, built with the Go `mise.toml` pins, as
+  `<binary>-<V>-linux-<arch>`, with `SHA256SUMS`.
 - **Go module**: `github.com/danielbodart/quoin` at the same tag, which
   frisket and chase compile against.
 - Not shipped: Docker — the gatekeepers are only of use wired into a host
@@ -166,9 +176,10 @@ design, written while these lived in frisket, is
 Updated weekly (Sunday 21:23 UTC): the flake's inputs, galley's release,
 mise's tools (by patch), the Go modules and the Zig plugin's minish and
 zwanzig (`.github/workflows/update.yml`), committed to trunk only once
-everything CI runs passes. A release is cut when the Go module, the flake
-and its modules (`flake.nix`, `nix/`) or `VERSION` changed (`RELEASE_PATHS`
-in `mise.toml`): the tag is what consumers pin.
+everything CI runs passes. A release is cut when the Go module, the test
+tools, the flake and its modules (`flake.nix`, `nix/`), the build, `VERSION`
+or `mise.toml`'s Go changed (`scripts/release-due.sh`): the tag is what
+consumers pin.
 
 ```nix
 inputs.quoin = {
@@ -188,19 +199,32 @@ mise pins the toolchain (`mise.toml`); `mise run check` is the dev loop and
 CI's fast job, the flake's checks the rest.
 
 ```console
-$ mise run check       # gofmt, go vet, go test ./..., shellcheck
-$ mise run build       # nix build of quoin's packages, as a host installs them
+$ mise run check       # gofmt, go vet, go test ./..., shellcheck, the
+                       # release scripts' tests
+$ mise run race        # go test -race ./... (needs cgo and a C compiler)
+$ mise run build       # the release's static binaries, into dist/
 $ go test ./...        # QUOIN_REQUIRE_SWTPM=1 and QUOIN_REQUIRE_SSH_KEYGEN=1
                        # fail rather than skip without them
 $ nix develop          # go, gopls, golangci-lint, swtpm, ssh-keygen, zig
-$ nix flake check      # build, tests with and without -race, vet, gofmt,
-                       # the Zig's tests and analysis, the modules'
-                       # evaluation, and the signer, sudo-gate, sudo-remote
-                       # and policy VM tests
+$ nix flake check      # on trunk: the Zig's tests and analysis and the
+                       # modules' evaluation
+```
+
+The VM tests (signer, sudo-gate, sudo-remote, policy) need the Go
+packages, which are a release's, so make binaries built here the flake's
+release first (this stages a `nix/release.json` that must never be
+committed):
+
+```console
+$ V=$(scripts/version.sh); QUOIN_VERSION=$V mise run build
+$ scripts/release-assets.sh "$V" /tmp/quoin-release dist
+$ scripts/nix-local-release.sh "$V" /tmp/quoin-release
+$ nix flake check      # now with the packages and the VM tests
 $ nix build .#timing.sudo-gate -L
                        # the sudo-gate VM test held to the gate's times as
                        # well; by hand only, on a machine fit to measure,
                        # since a time taken on a CI runner says nothing
+$ git rm --cached nix/release.json && rm nix/release.json
 ```
 
 ## Licence

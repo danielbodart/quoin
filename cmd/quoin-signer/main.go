@@ -45,7 +45,15 @@ const usage = `quoin-signer -- SSH keys in the TPM, asked for through galley
   quoin-signer keygen -out DIR [-comment C] [--no-da]
         Make a key in the TPM and write DIR/id_ecdsa.tpm and DIR/id_ecdsa.pub
         in stock ssh-tpm-agent's format.
+
+  quoin-signer version
+        Print the release this binary is, as scripts/build.sh stamped it.
 `
+
+// version is the release, stamped by scripts/build.sh with -X main.version
+// (scripts/version.sh): "dev" in a build that was not. scripts/release-assets.sh
+// asks it, so a release never carries a binary stamped for another.
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -63,6 +71,8 @@ func main() {
 		err = runCheck(args)
 	case "schema":
 		fmt.Fprint(os.Stdout, schema)
+	case "version", "-version", "--version":
+		fmt.Fprintln(os.Stdout, version)
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:

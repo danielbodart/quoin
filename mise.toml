@@ -1,7 +1,9 @@
-# The toolchain and the tasks CI and people call. Go's major.minor is the one
-# nixpkgs' go_1_27 has on nixos-26.05, which flake.nix builds with, so both
-# channels compile with the same language version; the weekly update moves
-# the patch, a new minor moves by hand with the nixpkgs attribute.
+# The toolchain and the tasks CI and people call. Go is pinned to the patch:
+# it compiles the release's binaries (scripts/build.sh), which the flake
+# installs as they are, so CI and a laptop compile with the same compiler.
+# Its major.minor is the one nixpkgs' go_1_27 has on nixos-26.05, which the
+# flake's dev shell offers; the weekly update moves the patch, a new minor
+# moves by hand with the nixpkgs attribute.
 #
 # The Zig of quoin-sudo's plugin (sudo/) is built and tested by the flake
 # only: it compiles against sudo's and PAM's headers, which nixpkgs has and
@@ -11,19 +13,13 @@ go = "1.27.3"
 shellcheck = "0.11.0"
 
 [env]
-# Static, as the flake builds it.
+# Static binaries with no libc, as every release is (scripts/build.sh says
+# why).
 CGO_ENABLED = "0"
-# What a release tag gives those who pin it: quoin ships only through Nix,
-# so its tag is the distro channel's release, and the flake and its modules
-# (flake.nix, nix/) are part of it, as is the Go module, which consumers
-# compile. A change to any of these since the last release tag is released
-# (see release-due); flake.lock (a consumer follows its own nixpkgs),
-# mise.toml (the dev loop's toolchain), the tests, docs and workflows are not.
-RELEASE_PATHS = "cmd courier execrule hostpattern internal peer policysign projpolicy sdnotify sudo go.mod go.sum flake.nix nix VERSION"
 
 [tasks.check]
-description = "Lint, unit tests and shellcheck: the dev loop and CI's fast job"
-depends = ["lint", "test", "shellcheck"]
+description = "Lint, unit tests, shellcheck and the release scripts' tests: the dev loop and CI's fast job"
+depends = ["lint", "test", "shellcheck", "scripts-test"]
 
 # lint and shellcheck are skipped while their sources stand still; test is
 # not, since Go's own test cache knows better than a glob what a test read.
@@ -36,9 +32,19 @@ run = [
   "go vet ./...",
 ]
 
+# The TPM and SSHSIG tests skip without swtpm and ssh-keygen, unless
+# QUOIN_REQUIRE_SWTPM or QUOIN_REQUIRE_SSH_KEYGEN is set, as CI sets them.
 [tasks.test]
 description = "go test, every package"
 run = "go test ./..."
+
+# The race detector's runtime is C, so this is the one task that turns cgo
+# on, for itself, and needs a C compiler (CI's race job has gcc; locally,
+# `nix develop -c mise run race`). Nothing it builds ships: every release
+# stays static.
+[tasks.race]
+description = "go test -race, every package (needs cgo and a C compiler)"
+run = "CGO_ENABLED=1 go test -race ./..."
 
 [tasks.shellcheck]
 description = "shellcheck the scripts"
@@ -46,16 +52,16 @@ sources = ["scripts/*.sh"]
 outputs = { auto = true }
 run = "shellcheck scripts/*.sh"
 
-# quoin ships only as Nix packages: building it is building those, as a host
-# installs them.
 [tasks.build]
-description = "quoin's packages, as a host installs them, by nix build"
-run = "nix build --print-out-paths .#quoin .#quoin-sudo-plugin"
+description = "quoin's static binaries for linux amd64 and arm64, in dist/: the release's assets"
+run = "scripts/build.sh"
 
+# What counts as a release's input is listed, and argued, in the script; the
+# last release is its tag's parent (scripts/last-release.sh).
 [tasks.release-due]
-description = "Exit 0, printing true, if anything in RELEASE_PATHS changed since the last release tag; else print false and exit 1"
-run = '''
-set -f
-last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null) || { echo true; exit 0; }
-if [ -n "$(git diff --name-only "$last" HEAD -- $RELEASE_PATHS)" ]; then echo true; else echo false; exit 1; fi
-'''
+description = "Exit 0, printing true, if anything a release is built from changed since the last release; else print false and exit 1"
+run = "scripts/release-due.sh"
+
+[tasks.scripts-test]
+description = "The release scripts' own tests, against a throwaway repository and a known SHA256SUMS"
+run = ["scripts/release-due-test.sh", "scripts/release-json-test.sh"]

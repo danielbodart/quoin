@@ -1,113 +1,109 @@
 {
   description = "The host's gatekeepers: SSH keys in the TPM, sudo with no terminal, and a project's signed policy, asked through galley";
 
-  # nixos-26.05, the release nix-config builds every host from, so what this
-  # flake builds and pushes to the cache is the derivation a host builds.
+  # nixos-26.05, the release nix-config builds every host from, so the Zig
+  # plugin this flake builds and pushes to the cache is the derivation a
+  # host builds. The Go packages are the release's binaries, whatever
+  # nixpkgs is (see release, below).
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs = { self, nixpkgs }:
     let
+      lib = nixpkgs.lib;
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = nixpkgs.lib.genAttrs systems;
-      darwinSystems = nixpkgs.lib.genAttrs [ "aarch64-darwin" ];
+      forAllSystems = lib.genAttrs systems;
+      darwinSystems = lib.genAttrs [ "aarch64-darwin" ];
 
-      # nixpkgs' name for a build from a commit rather than a release:
-      # 0-unstable-YYYY-MM-DD, the date of the commit. A release is a tag
-      # named by scripts/version.sh, which needs the repository to count, and
-      # a build from a store path has none.
-      version =
-        let d = self.lastModifiedDate or "19700101"; in
-        "0-unstable-${builtins.substring 0 4 d}-${builtins.substring 4 2 d}-${builtins.substring 6 2 d}";
-
-      # Go's major.minor, the one mise.toml pins: both channels compile with
-      # the same language version.
+      # Go's major.minor, the one mise.toml pins, for the dev shell.
       go = pkgs: pkgs.go_1_27;
 
-      # One package, all four binaries: quoin, the person's own tool for a
-      # project's policy file, and the three gatekeepers, quoin-signer,
-      # quoin-sudo and quoin-courier. They share one module and one test
-      # suite, so a change to any of them rebuilds and retests all of them
-      # anyway. The suite is not run here but by checks.tests, from the same
-      # derivation with doCheck on: everything built on the package -- each
-      # VM test, and a host's system -- waits only for the compile, not for
-      # the tests as well.
-      mkQuoin = pkgs: (pkgs.buildGoModule.override { go = go pkgs; }) {
-        pname = "quoin";
-        inherit version;
-        # The Go module alone, so that a change to the docs, the modules or
-        # the VM tests does not rebuild and retest the binaries, and so every
-        # VM test, from scratch.
-        src = nixpkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = nixpkgs.lib.fileset.difference ./. (nixpkgs.lib.fileset.unions [
-            ./docs
-            ./README.md
-            ./flake.nix
-            ./flake.lock
-            ./nix
-            ./.github
-            ./scripts
-            ./VERSION
-            (nixpkgs.lib.fileset.fileFilter (f: f.hasExt "nix") ./tests)
-          ]);
-        };
+      # THE GO PACKAGES ARE THE RELEASE'S BINARIES, not a build from source
+      # (Dan, 2026-11-15): CI's build job compiles them once, static, with
+      # the Go mise.toml pins (scripts/build.sh), tests them, and the release
+      # carries them; building them again here only made second binaries
+      # that were not the ones released. So a release's tag is a commit of
+      # its own, a child of the released trunk commit, that adds
+      # nix/release.json: the version, and for each system each binary's
+      # asset URL and hash (scripts/release-json.sh writes it; ci.yml's
+      # release job commits and tags it). A flake fetched as
+      # github:danielbodart/quoin/v<V> sees its commit, not its tag, which is
+      # why the version is in the file.
+      #
+      # On trunk there is no such file and no Go package, nor any check or
+      # module that needs one: pin a release tag. Absent rather than an
+      # error, so `nix flake check` and the dev shell still work on trunk.
+      #
+      # quoin-sudo-plugin stays a build from source, on trunk too: it is a
+      # shared object sudo loads, linked against libc and libpam, and built
+      # for the very sudo version the host runs (nix/sudo-zig.nix), so no
+      # prebuilt file could serve every host.
+      releaseFile = ./nix/release.json;
+      release =
+        if builtins.pathExists releaseFile
+        then lib.importJSON releaseFile
+        else null;
 
-        # Pinned rather than null, because there are dependencies: x/crypto
-        # for ssh, the agent protocol the signer serves and SSHSIG, which a
-        # project's policy file is signed in; x/sys for the peer checks;
-        # galley's wire and services client, for the questions the signer and
-        # the gate put to galley; go-tpm with go-tpm-keyfiles for the signer's
-        # TPM keys; and rapid for the property tests. vendorHash = null is a
-        # nice property and never a security one.
-        vendorHash = "sha256-PDcazj7zRa15vSMGBqmqSGX8QgrryNTxbh26ZKgOQrs=";
-
-        # A STATIC BINARY. Each gatekeeper runs as a systemd unit with
-        # ProtectSystem=strict, and the sudo gate answers a plugin that sudo
-        # loads as root. cgo would drag in glibc's NSS, which resolves names
-        # through whatever the host's nsswitch.conf says -- exactly the kind of
-        # implicit configuration a gatekeeper should not have.
-        env.CGO_ENABLED = 0;
-        # One swtpm per TPM test; set, they fail rather than skip without it.
-        env.QUOIN_REQUIRE_SWTPM = "1";
-        # projpolicy's SSHSIG and allowed_signers are held to stock
-        # ssh-keygen; set, those tests fail rather than skip without it.
-        env.QUOIN_REQUIRE_SSH_KEYGEN = "1";
-
-        ldflags = [ "-s" "-w" "-X" "main.version=${version}" ];
-        excludedPackages = [ "tests/fakegalley" "tests/agenttamper" ];
-
-        # `go test ./...` rather than buildGoModule's own check, which would
-        # leave out the excluded packages' tests. peer's user namespace test
-        # skips cleanly where the kernel refuses one, so this passes in the
-        # Nix sandbox and means something on a machine where it does not have
-        # to. Off in the package; checks.tests turns it on.
-        doCheck = false;
-        checkPhase = ''
-          runHook preCheck
-          go test ./...
-          runHook postCheck
+      # Static binaries installed byte for byte as the release has them: no
+      # stripping or patching, which a static Go binary needs on neither
+      # NixOS nor anywhere else, and which would make them differ from the
+      # release's SHA256SUMS.
+      mkRelease = pkgs: { pname, assets, bins, mainProgram, description }: pkgs.stdenvNoCC.mkDerivation {
+        inherit pname;
+        inherit (release) version;
+        dontUnpack = true;
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          ${lib.concatMapStrings (b: "install -Dm0755 ${pkgs.fetchurl { inherit (assets.${b}) url hash; }} $out/bin/${b}\n") bins}
+          runHook postInstall
         '';
-        nativeCheckInputs = [ pkgs.swtpm pkgs.openssh ];
-
+        dontFixup = true;
         meta = {
-          description = "The host's gatekeepers: SSH keys in the TPM, sudo with no terminal, and a project's signed policy, asked through galley";
+          inherit description mainProgram;
           homepage = "https://github.com/danielbodart/quoin";
-          license = nixpkgs.lib.licenses.mit;
-          mainProgram = "quoin";
-          platforms = nixpkgs.lib.platforms.linux;
+          license = lib.licenses.mit;
+          platforms = builtins.attrNames release.assets;
+          sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
         };
       };
 
-      # A program of tests/, built from the same module, and the same vendored
-      # dependencies, with no tests of its own to run.
-      mkTool = pkgs: name: (mkQuoin pkgs).overrideAttrs (old: {
-        pname = name;
-        inherit (mkQuoin pkgs) goModules;
-        subPackages = [ "tests/${name}" ];
-        excludedPackages = [ ];
-        doCheck = false;
-        meta = old.meta // { mainProgram = name; };
-      });
+      # The release's packages for each system it has assets for.
+      releasePackages = lib.mapAttrs
+        (system: assets:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+            mk = mkRelease pkgs;
+          in
+          rec {
+            # One package, the four binaries: quoin, the person's own tool for
+            # a project's policy file, and the three gatekeepers.
+            quoin = mk {
+              pname = "quoin";
+              inherit assets;
+              bins = [ "quoin" "quoin-signer" "quoin-sudo" "quoin-courier" ];
+              mainProgram = "quoin";
+              description = "The host's gatekeepers: SSH keys in the TPM, sudo with no terminal, and a project's signed policy, asked through galley";
+            };
+            default = quoin;
+            # galley's services socket in the VM tests, answering from a script.
+            fakegalley = mk {
+              pname = "fakegalley";
+              inherit assets;
+              bins = [ "fakegalley" ];
+              mainProgram = "fakegalley";
+              description = "galley's services socket, answering from a script, for tests";
+            };
+            # A client that binds one session and signs for another, for the signer's VM test.
+            agenttamper = mk {
+              pname = "agenttamper";
+              inherit assets;
+              bins = [ "agenttamper" ];
+              mainProgram = "agenttamper";
+              description = "An agent client that binds one session and signs for another, for tests";
+            };
+          })
+        (if release == null then { } else release.assets);
     in
     {
       # Keyed, so the module system can tell each is one module however many
@@ -145,21 +141,16 @@
       # macOS has quoin-sudo's darwin build alone: its signer, courier and
       # gate are Linux's (TPM, /proc, systemd), and a Mac's sudo is approved
       # from the Linux machine the person is at.
-      packages = darwinSystems (system: {
-        quoin-sudo-plugin = (import ./nix/sudo-zig-darwin.nix { pkgs = nixpkgs.legacyPackages.${system}; }).package;
-      }) // forAllSystems (system:
+      packages = darwinSystems
+        (system: {
+          quoin-sudo-plugin = (import ./nix/sudo-zig-darwin.nix { pkgs = nixpkgs.legacyPackages.${system}; }).package;
+        }) // forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
-        rec {
-          quoin = mkQuoin pkgs;
-          default = quoin;
+        {
           # quoin-sudo's Zig: the audit plugin, its PAM helper and the
           # build-time plugin check. See nix/sudo-zig.nix.
           quoin-sudo-plugin = (import ./nix/sudo-zig.nix { inherit pkgs; }).package;
-          # galley's services socket in the VM tests, answering from a script.
-          fakegalley = mkTool pkgs "fakegalley";
-          # A client that binds one session and signs for another, for the signer's VM test.
-          agenttamper = mkTool pkgs "agenttamper";
-        });
+        } // (releasePackages.${system} or { }));
 
       devShells = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
@@ -169,39 +160,28 @@
             # without them unless QUOIN_REQUIRE_SWTPM or
             # QUOIN_REQUIRE_SSH_KEYGEN says to fail; zig, for sudo/.
             packages = [ (go pkgs) pkgs.gopls pkgs.golangci-lint pkgs.swtpm pkgs.openssh pkgs.zig_0_15 ];
-            # The same setting the package builds with, so a `go build` in the
-            # shell produces the same binary the flake does rather than a
-            # dynamically linked one that works here and nowhere else.
+            # The same setting the release is built with (scripts/build.sh),
+            # so a `go build` in the shell produces a static binary rather
+            # than a dynamically linked one that works here and nowhere else.
             CGO_ENABLED = "0";
           };
         });
 
-      checks = darwinSystems (system: {
-        inherit (self.packages.${system}) quoin-sudo-plugin;
-        # The darwin Zig's unit tests, the plugin's from outside, lint and
-        # fmt, on the Mac they are built for.
-        sudo-zig = (import ./nix/sudo-zig-darwin.nix { pkgs = nixpkgs.legacyPackages.${system}; }).check;
-      }) // forAllSystems (system:
+      checks = darwinSystems
+        (system: {
+          inherit (self.packages.${system}) quoin-sudo-plugin;
+          # The darwin Zig's unit tests, the plugin's from outside, lint and
+          # fmt, on the Mac they are built for.
+          sudo-zig = (import ./nix/sudo-zig-darwin.nix { pkgs = nixpkgs.legacyPackages.${system}; }).check;
+        }) // forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          pkg = self.packages.${system}.quoin;
           host = extra: nixpkgs.lib.nixosSystem {
             inherit system;
             modules = [{ boot.isContainer = true; system.stateVersion = "26.05"; }] ++ extra;
           };
         in
         {
-          # The build.
-          inherit (self.packages.${system}) quoin;
-
-          # The unit tests, the property tests and the fuzz corpora: the
-          # package's own derivation with its check on.
-          tests = pkg.overrideAttrs (_: {
-            pname = "quoin-tests";
-            inherit (pkg) goModules;
-            doCheck = true;
-          });
-
           # quoin-sudo's Zig, and its tests, the mode parse held to sudo's
           # own parse_args among them, lint, fmt and zwanzig.
           inherit (self.packages.${system}) quoin-sudo-plugin;
@@ -228,6 +208,101 @@
                 sudo = eval.config.services.quoin.sudo.enable;
                 courier = eval.config.services.quoin.policy.courier.enable;
               });
+
+          # No login user may be in tss while the signer is enabled, however
+          # the membership is spelled.
+          signer-tss =
+            let
+              refused = user: group: builtins.any (a: ! a.assertion)
+                (host [
+                  self.nixosModules.signer
+                  {
+                    services.quoin.signer.enable = true;
+                    users.users.alice = { isNormalUser = true; } // user;
+                    users.groups.tss = group;
+                  }
+                ]).config.assertions;
+              wrong = builtins.filter (x: x.got != x.want) [
+                { case = "none"; got = refused { } { }; want = false; }
+                { case = "extraGroups"; got = refused { extraGroups = [ "tss" ]; } { }; want = true; }
+                { case = "members"; got = refused { } { members = [ "alice" ]; }; want = true; }
+                { case = "primary"; got = refused { group = "tss"; } { }; want = true; }
+              ];
+            in
+            assert nixpkgs.lib.assertMsg (wrong == [ ]) "tss assertion judged wrongly: ${builtins.toJSON wrong}";
+            pkgs.writeText "quoin-signer-tss" "ok";
+
+          # The gate refuses a sudo set-up it cannot gate safely.
+          sudo-eval =
+            let
+              refused = extra: builtins.any (a: ! a.assertion)
+                (host [
+                  self.nixosModules.sudo
+                  { services.quoin.sudo.enable = true; }
+                  extra
+                ]).config.assertions;
+              sudoers = text: { security.sudo.extraConfig = text; };
+              remote = { services.quoin.sudo.remoteKeys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl a" ]; };
+              wrong = builtins.filter (x: refused x.extra != x.want) [
+                { case = "none"; extra = { }; want = false; }
+                { case = "negated"; extra = sudoers "Defaults !rootpw, !intercept\nDefaults intercept_verify"; want = false; }
+                { case = "extra auth rule"; extra = { security.pam.services.sudo.fprintAuth = true; }; want = true; }
+                { case = "extra quoin-sudo auth rule"; extra = { security.pam.services.quoin-sudo.fprintAuth = true; }; want = true; }
+                { case = "timestamp_type=global"; extra = sudoers "Defaults timestamp_type=global"; want = true; }
+                { case = "!tty_tickets"; extra = sudoers "Defaults !tty_tickets"; want = true; }
+                { case = "tty_tickets"; extra = sudoers "Defaults tty_tickets"; want = false; }
+                { case = "rootpw"; extra = sudoers "Defaults rootpw"; want = true; }
+                { case = "targetpw"; extra = sudoers "Defaults:dan targetpw"; want = true; }
+                { case = "runaspw"; extra = sudoers "Defaults runaspw"; want = true; }
+                { case = "intercept"; extra = sudoers "Defaults intercept"; want = true; }
+                { case = "log_subcmds"; extra = sudoers "Defaults log_subcmds"; want = true; }
+                { case = "INTERCEPT tag"; extra = sudoers "dan ALL=(ALL) INTERCEPT: ALL"; want = true; }
+                { case = "LOG_SUBCMDS tag"; extra = sudoers "dan ALL=(ALL) LOG_SUBCMDS: ALL"; want = true; }
+                { case = "NOINTERCEPT tag"; extra = sudoers "dan ALL=(ALL) NOINTERCEPT: ALL"; want = false; }
+                { case = "INTERCEPT in extraRules"; extra = { security.sudo.extraRules = [{ users = [ "dan" ]; commands = [{ command = "ALL"; options = [ "INTERCEPT" ]; }]; }]; }; want = true; }
+                { case = "ptrace_scope 0"; extra = { boot.kernel.sysctl."kernel.yama.ptrace_scope" = 0; }; want = true; }
+                { case = "remote keys"; extra = remote; want = false; }
+                { case = "a courier for the gated user"; extra = { services.quoin.policy = { fileName = "chase.json"; courier.enable = true; }; }; want = false; }
+                { case = "a courier for another user"; extra = { services.quoin.policy = { fileName = "chase.json"; courier = { enable = true; forUser = "root"; }; }; }; want = true; }
+                { case = "remote keys and an extra auth rule"; extra = { imports = [ remote ]; security.pam.services.sudo.fprintAuth = true; }; want = true; }
+              ];
+            in
+            assert nixpkgs.lib.assertMsg (wrong == [ ]) "sudo gate assertions judged wrongly: ${builtins.toJSON (map (x: x.case) wrong)}";
+            pkgs.writeText "quoin-sudo-eval" "ok";
+
+          # sudo.conf is never built from a plugin sudo would not load.
+          sudo-conf =
+            let
+              plugin = self.packages.${system}.quoin-sudo-plugin;
+              conf = args: import ./nix/sudo-conf.nix { inherit pkgs plugin; } ({ version = pkgs.sudo.version; user = "dan"; } // args);
+              fails = args: pkgs.testers.testBuildFailure (conf args);
+            in
+            pkgs.runCommand "quoin-sudo-conf"
+              {
+                good = conf { };
+                remote = conf { remote = true; };
+                broken = fails { so = "${pkgs.writeText "not-a-plugin.so" "not a library"}"; };
+                symbol = fails { symbol = "quoin_approval"; };
+                type = fails { so = "${pkgs.sudo}/libexec/sudo/sudoers.so"; symbol = "sudoers_policy"; };
+              }
+              ''
+                grep -qx "Plugin quoin_audit ${plugin}/lib/quoin_sudo.so user=dan" $good
+                grep -qx "Plugin quoin_audit ${plugin}/lib/quoin_sudo.so user=dan remote" $remote
+                grep -q "cannot load" $broken/testBuildFailure.log
+                grep -q "no symbol quoin_approval" $symbol/testBuildFailure.log
+                grep -q "is plugin type 1, not 3 (audit)" $type/testBuildFailure.log
+                touch $out
+              '';
+        }
+        # What runs or renders quoin's binaries, so needs its packages, which
+        # are the release's (see release, at the top): on a release tag, and
+        # in CI's nix job, which makes this run's binaries the flake's
+        # release (scripts/nix-local-release.sh). The tests, the race tests,
+        # vet and gofmt are mise's (mise run check and race), on the very
+        # toolchain the binaries are built with.
+        // lib.optionalAttrs (self.packages.${system} ? quoin) {
+          # The binaries, as a host installs them.
+          inherit (self.packages.${system}) quoin fakegalley agenttamper;
 
           # The policy module: allowed signers rendered and read as the
           # verifiers will (building this builds the file, which runs quoin
@@ -309,132 +384,6 @@
             assert nixpkgs.lib.assertMsg (wrong == [ ]) "the signer's units judged wrongly: ${builtins.toJSON wrong}";
             pkgs.writeText "quoin-signer-units" "ok";
 
-          # No login user may be in tss while the signer is enabled, however
-          # the membership is spelled.
-          signer-tss =
-            let
-              refused = user: group: builtins.any (a: ! a.assertion) (host [
-                self.nixosModules.signer
-                {
-                  services.quoin.signer.enable = true;
-                  users.users.alice = { isNormalUser = true; } // user;
-                  users.groups.tss = group;
-                }
-              ]).config.assertions;
-              wrong = builtins.filter (x: x.got != x.want) [
-                { case = "none"; got = refused { } { }; want = false; }
-                { case = "extraGroups"; got = refused { extraGroups = [ "tss" ]; } { }; want = true; }
-                { case = "members"; got = refused { } { members = [ "alice" ]; }; want = true; }
-                { case = "primary"; got = refused { group = "tss"; } { }; want = true; }
-              ];
-            in
-            assert nixpkgs.lib.assertMsg (wrong == [ ]) "tss assertion judged wrongly: ${builtins.toJSON wrong}";
-            pkgs.writeText "quoin-signer-tss" "ok";
-
-          # The gate refuses a sudo set-up it cannot gate safely.
-          sudo-eval =
-            let
-              refused = extra: builtins.any (a: ! a.assertion) (host [
-                self.nixosModules.sudo
-                { services.quoin.sudo.enable = true; }
-                extra
-              ]).config.assertions;
-              sudoers = text: { security.sudo.extraConfig = text; };
-              remote = { services.quoin.sudo.remoteKeys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl a" ]; };
-              wrong = builtins.filter (x: refused x.extra != x.want) [
-                { case = "none"; extra = { }; want = false; }
-                { case = "negated"; extra = sudoers "Defaults !rootpw, !intercept\nDefaults intercept_verify"; want = false; }
-                { case = "extra auth rule"; extra = { security.pam.services.sudo.fprintAuth = true; }; want = true; }
-                { case = "extra quoin-sudo auth rule"; extra = { security.pam.services.quoin-sudo.fprintAuth = true; }; want = true; }
-                { case = "timestamp_type=global"; extra = sudoers "Defaults timestamp_type=global"; want = true; }
-                { case = "!tty_tickets"; extra = sudoers "Defaults !tty_tickets"; want = true; }
-                { case = "tty_tickets"; extra = sudoers "Defaults tty_tickets"; want = false; }
-                { case = "rootpw"; extra = sudoers "Defaults rootpw"; want = true; }
-                { case = "targetpw"; extra = sudoers "Defaults:dan targetpw"; want = true; }
-                { case = "runaspw"; extra = sudoers "Defaults runaspw"; want = true; }
-                { case = "intercept"; extra = sudoers "Defaults intercept"; want = true; }
-                { case = "log_subcmds"; extra = sudoers "Defaults log_subcmds"; want = true; }
-                { case = "INTERCEPT tag"; extra = sudoers "dan ALL=(ALL) INTERCEPT: ALL"; want = true; }
-                { case = "LOG_SUBCMDS tag"; extra = sudoers "dan ALL=(ALL) LOG_SUBCMDS: ALL"; want = true; }
-                { case = "NOINTERCEPT tag"; extra = sudoers "dan ALL=(ALL) NOINTERCEPT: ALL"; want = false; }
-                { case = "INTERCEPT in extraRules"; extra = { security.sudo.extraRules = [{ users = [ "dan" ]; commands = [{ command = "ALL"; options = [ "INTERCEPT" ]; }]; }]; }; want = true; }
-                { case = "ptrace_scope 0"; extra = { boot.kernel.sysctl."kernel.yama.ptrace_scope" = 0; }; want = true; }
-                { case = "remote keys"; extra = remote; want = false; }
-                { case = "a courier for the gated user"; extra = { services.quoin.policy = { fileName = "chase.json"; courier.enable = true; }; }; want = false; }
-                { case = "a courier for another user"; extra = { services.quoin.policy = { fileName = "chase.json"; courier = { enable = true; forUser = "root"; }; }; }; want = true; }
-                { case = "remote keys and an extra auth rule"; extra = { imports = [ remote ]; security.pam.services.sudo.fprintAuth = true; }; want = true; }
-              ];
-            in
-            assert nixpkgs.lib.assertMsg (wrong == [ ]) "sudo gate assertions judged wrongly: ${builtins.toJSON (map (x: x.case) wrong)}";
-            pkgs.writeText "quoin-sudo-eval" "ok";
-
-          # sudo.conf is never built from a plugin sudo would not load.
-          sudo-conf =
-            let
-              plugin = self.packages.${system}.quoin-sudo-plugin;
-              conf = args: import ./nix/sudo-conf.nix { inherit pkgs plugin; } ({ version = pkgs.sudo.version; user = "dan"; } // args);
-              fails = args: pkgs.testers.testBuildFailure (conf args);
-            in
-            pkgs.runCommand "quoin-sudo-conf"
-              {
-                good = conf { };
-                remote = conf { remote = true; };
-                broken = fails { so = "${pkgs.writeText "not-a-plugin.so" "not a library"}"; };
-                symbol = fails { symbol = "quoin_approval"; };
-                type = fails { so = "${pkgs.sudo}/libexec/sudo/sudoers.so"; symbol = "sudoers_policy"; };
-              }
-              ''
-                grep -qx "Plugin quoin_audit ${plugin}/lib/quoin_sudo.so user=dan" $good
-                grep -qx "Plugin quoin_audit ${plugin}/lib/quoin_sudo.so user=dan remote" $remote
-                grep -q "cannot load" $broken/testBuildFailure.log
-                grep -q "no symbol quoin_approval" $symbol/testBuildFailure.log
-                grep -q "is plugin type 1, not 3 (audit)" $type/testBuildFailure.log
-                touch $out
-              '';
-
-          # Formatting as a gate rather than a habit: this is one repository
-          # with one formatter and no argument to have about it.
-          gofmt = pkgs.runCommand "gofmt"
-            { nativeBuildInputs = [ (go pkgs) ]; }
-            ''
-              cd ${./.}
-              unformatted=$(gofmt -l .)
-              if [ -n "$unformatted" ]; then
-                echo "not gofmt'd:" >&2
-                echo "$unformatted" >&2
-                exit 1
-              fi
-              touch $out
-            '';
-
-          # go vet from inside the package's own build, because vet needs the
-          # module's dependencies and this is where they already are.
-          govet = pkg.overrideAttrs (_: {
-            pname = "quoin-vet";
-            inherit (pkg) goModules;
-            doCheck = true;
-            checkPhase = ''
-              runHook preCheck
-              go vet ./...
-              runHook postCheck
-            '';
-          });
-
-          # The tests again, under the race detector. It needs cgo -- the race
-          # runtime is C -- so this check turns it on for itself; the package
-          # is still built static, with CGO_ENABLED=0, and never ships this.
-          race = pkg.overrideAttrs (old: {
-            pname = "quoin-race";
-            inherit (pkg) goModules;
-            env = (old.env or { }) // { CGO_ENABLED = 1; };
-            doCheck = true;
-            checkPhase = ''
-              runHook preCheck
-              go test -race ./...
-              runHook postCheck
-            '';
-          });
-
           # quoin-signer with a software TPM, two sshds and fakegalley, in a VM.
           signer = pkgs.testers.runNixOSTest (import ./tests/signer.nix { inherit self; });
 
@@ -448,16 +397,6 @@
           # quoin-courier as nixosModules.policy runs it, read and written by
           # a stand-in peer unit, in a VM.
           policy = pkgs.testers.runNixOSTest (import ./tests/policy.nix { inherit self; });
-
-          # The version script decides what every release is called, and pin.sh,
-          # vendor-hash.sh and zig-deps.sh what the weekly update commits, so
-          # they are gated by the same check that gates the release.
-          shellcheck = pkgs.runCommand "shellcheck"
-            { nativeBuildInputs = [ pkgs.shellcheck ]; }
-            ''
-              shellcheck ${./scripts/version.sh} ${./scripts/pin.sh} ${./scripts/vendor-hash.sh} ${./scripts/zig-deps.sh}
-              touch $out
-            '';
         });
 
       # Tests that hold quoin to times, which checks leaves out: a CI runner
@@ -467,7 +406,7 @@
       #   nix build .#timing.sudo-gate -L
       legacyPackages = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
-        {
+        lib.optionalAttrs (self.packages.${system} ? quoin) {
           timing.sudo-gate = pkgs.testers.runNixOSTest (import ./tests/sudo-gate.nix { inherit self; timing = true; });
         });
 

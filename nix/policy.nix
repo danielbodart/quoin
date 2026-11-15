@@ -10,7 +10,7 @@ self:
 let
   cfg = config.services.quoin.policy;
   inherit (lib) mkOption types;
-  package = self.packages.${pkgs.stdenv.hostPlatform.system}.quoin;
+  package = self.packages.${pkgs.stdenv.hostPlatform.system}.quoin or (throw "quoin: its packages are its release binaries, which only a release tag has (flake.nix): pin github:danielbodart/quoin/vX.Y.Z, not trunk");
 
   signer = types.submodule {
     options = {

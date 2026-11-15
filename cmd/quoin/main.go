@@ -37,7 +37,15 @@ const usage = `quoin -- a project's signed policy file, by hand
         made over, -old FILE or else git's HEAD of POLICY, when the signature
         verifies over them; otherwise against nothing. -agent defaults to
         $SSH_AUTH_SOCK.
+
+  quoin version
+        Print the release this binary is, as scripts/build.sh stamped it.
 `
+
+// version is the release, stamped by scripts/build.sh with -X main.version
+// (scripts/version.sh): "dev" in a build that was not. scripts/release-assets.sh
+// asks it, so a release never carries a binary stamped for another.
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -48,6 +56,8 @@ func main() {
 	switch os.Args[1] {
 	case "policy":
 		err = runPolicy(os.Args[2:], os.Stdout)
+	case "version", "-version", "--version":
+		fmt.Fprintln(os.Stdout, version)
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:

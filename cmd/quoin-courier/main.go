@@ -48,7 +48,15 @@ const usage = `quoin-courier -- a project's signed policy file, carried from the
   quoin-courier write [-socket PATH] -root DIR -old DIGEST -file POLICY -sig SIG
         Ask the courier to replace DIR's policy file with POLICY and SIG,
         if it is still the one DIGEST names ("" for none).
+
+  quoin-courier version
+        Print the release this binary is, as scripts/build.sh stamped it.
 `
+
+// version is the release, stamped by scripts/build.sh with -X main.version
+// (scripts/version.sh): "dev" in a build that was not. scripts/release-assets.sh
+// asks it, so a release never carries a binary stamped for another.
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -68,6 +76,8 @@ func main() {
 		err = runRead(args, os.Stdout)
 	case "write":
 		err = runWrite(args, os.Stdout)
+	case "version", "-version", "--version":
+		fmt.Fprintln(os.Stdout, version)
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:

@@ -18,7 +18,7 @@ import (
 )
 
 // sshKeygen is stock ssh-keygen, the oracle these tests hold the package
-// to. The flake's check sets QUOIN_REQUIRE_SSH_KEYGEN, so there a missing
+// to. CI sets QUOIN_REQUIRE_SSH_KEYGEN, so there a missing
 // one fails rather than skips.
 func sshKeygen(t *testing.T) string {
 	t.Helper()

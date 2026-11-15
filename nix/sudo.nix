@@ -9,7 +9,7 @@ let
   inherit (lib) mkOption types;
   system = pkgs.stdenv.hostPlatform.system;
   plugin = (import ./sudo-zig.nix { inherit pkgs; sudo = config.security.sudo.package; }).package;
-  package = self.packages.${system}.quoin;
+  package = self.packages.${system}.quoin or (throw "quoin: its packages are its release binaries, which only a release tag has (flake.nix): pin github:danielbodart/quoin/vX.Y.Z, not trunk");
   gate = lib.getExe' package "quoin-sudo";
   sudoConf = import ./sudo-conf.nix { inherit pkgs plugin; } {
     version = config.security.sudo.package.version;

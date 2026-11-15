@@ -29,7 +29,15 @@ const usage = `quoin-sudo -- the gate for sudo with no terminal, asked through g
 
   quoin-sudo schema
         Print the config file's JSON Schema.
+
+  quoin-sudo version
+        Print the release this binary is, as scripts/build.sh stamped it.
 `
+
+// version is the release, stamped by scripts/build.sh with -X main.version
+// (scripts/version.sh): "dev" in a build that was not. scripts/release-assets.sh
+// asks it, so a release never carries a binary stamped for another.
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -44,6 +52,8 @@ func main() {
 		err = runCheck(os.Args[2:])
 	case "schema":
 		fmt.Fprint(os.Stdout, schema)
+	case "version", "-version", "--version":
+		fmt.Fprintln(os.Stdout, version)
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:
