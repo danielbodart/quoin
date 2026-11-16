@@ -1,0 +1,57 @@
+{
+  "version": "0.103.30",
+  "assets": {
+    "x86_64-linux": {
+      "quoin": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-0.103.30-linux-amd64",
+        "hash": "sha256-2+Y8LgEBTESD9XlUCHxDe0Ahg72dnNcjyRV6opgdpKU="
+      },
+      "quoin-signer": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-signer-0.103.30-linux-amd64",
+        "hash": "sha256-/cs4+fstQU/1FJ/nRjohxG6x4ph+c6PSPlRJB62iX9A="
+      },
+      "quoin-sudo": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-sudo-0.103.30-linux-amd64",
+        "hash": "sha256-ZvSHcJ/zJqX/qNXE6thgNi+turLqJWNEwpDTygOhf4Q="
+      },
+      "quoin-courier": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-courier-0.103.30-linux-amd64",
+        "hash": "sha256-tSWrDYcWjAvPjrm/mFcxoLZW2gMVDOiirsAdSZHlCCw="
+      },
+      "fakegalley": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/fakegalley-0.103.30-linux-amd64",
+        "hash": "sha256-lxu/kfhbo0PLGMzYRQoyG3R2i9/BDvW5FpUaKIr+qjU="
+      },
+      "agenttamper": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/agenttamper-0.103.30-linux-amd64",
+        "hash": "sha256-RGylaWmd9hk8AYJjnA1HWyiVEaeTk82214vngHt2gEc="
+      }
+    },
+    "aarch64-linux": {
+      "quoin": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-0.103.30-linux-arm64",
+        "hash": "sha256-OrSoMYMbJ7zv80KYWslwGqkdO/GK7nkTd4W9qDT+Fqw="
+      },
+      "quoin-signer": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-signer-0.103.30-linux-arm64",
+        "hash": "sha256-RXMZBqcrlIBLY2qgNp5tBXrsFQYzwx4QDSLYq/4Q+U4="
+      },
+      "quoin-sudo": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-sudo-0.103.30-linux-arm64",
+        "hash": "sha256-jv4Eeh2YTnmDdy9zlvJ+LPP36LuX8hT9yG8+7jJGdLk="
+      },
+      "quoin-courier": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/quoin-courier-0.103.30-linux-arm64",
+        "hash": "sha256-+zca+utBKmeEwaiT3yBCYCcg9lhlbGAgFm50t0swOkM="
+      },
+      "fakegalley": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/fakegalley-0.103.30-linux-arm64",
+        "hash": "sha256-xl3AOp5m3Mgwr7pFhIMei4phFUoOnJehC1CDFeTXLs0="
+      },
+      "agenttamper": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.103.30/agenttamper-0.103.30-linux-arm64",
+        "hash": "sha256-3vmPXwC4w5J5yoH4YUHu626G1EvWH/Ab2CV4K468qGI="
+      }
+    }
+  }
+}
