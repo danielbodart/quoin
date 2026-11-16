@@ -9,7 +9,7 @@
 # only: it compiles against sudo's and PAM's headers, which nixpkgs has and
 # a runner does not.
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 shellcheck = "0.11.0"
 
 [env]
