@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/danielbodart/quoin/internal/sudomsg"
+	"github.com/danielbodart/quoin/internal/sudoq"
 	"github.com/danielbodart/quoin/peer"
 	"golang.org/x/crypto/ssh"
 )
@@ -170,11 +172,12 @@ func TestTheMessageNamesEveryHostKeyAndTheResolvedCommand(t *testing.T) {
 	c.send(approval(cmd))
 	r := c.readMessage()
 	want := &sudomsg.Message{
-		Version:  sudomsg.V1,
+		Version:  sudomsg.V2,
 		Nonce:    r.msg.Nonce,
 		HostKeys: [][]byte{hosts[0].Marshal(), hosts[1].Marshal()},
 		User:     "dan", RunAs: "root", Cwd: "/home/dan/src",
-		Argv: []string{bin + "systemctl", "restart", "foo"},
+		Argv:  []string{bin + "systemctl", "restart", "foo"},
+		Links: sshd(),
 	}
 	if !reflect.DeepEqual(r.msg, want) {
 		t.Errorf("got %+v\nwant %+v", r.msg, want)
@@ -196,25 +199,30 @@ func TestARemoteAIsClassifiedAsALocalOne(t *testing.T) {
 	h := newHarness(t)
 	h.remote(agentKey(t))
 	for _, tc := range []struct {
-		cmd     sudoCmd
-		level   string
-		reasons []string
+		cmd    sudoCmd
+		level  string
+		danger []string
+		env    []string
 	}{
-		{remoteCmd("foo"), "", nil},
-		{remoteCmd("sshd.service"), "danger", []string{"touches a unit that guards this machine"}},
-		{func() sudoCmd { c := remoteCmd("foo"); c.links = cut; return c }(), "warning", []string{"the process chain was cut short"}},
+		{remoteCmd("foo"), "normal", nil, nil},
+		{remoteCmd("sshd.service"), "danger", []string{"touches a unit that guards this machine"}, nil},
+		{func() sudoCmd { c := remoteCmd("foo"); c.links = cut; return c }(), "warning", nil, nil},
 		{func() sudoCmd {
 			c := remoteCmd("foo")
 			c.envp = []string{"PATH=/bin", "LD_PRELOAD=/tmp/x.so"}
 			return c
-		}(), "", []string{"LD_PRELOAD=/tmp/x.so"}},
-		{func() sudoCmd { c := remoteCmd("foo"); c.program = "/home/dan/bin/systemctl"; return c }(), "danger", []string{"runs /home/dan/bin/systemctl, outside the root-owned directories"}},
+		}(), "normal", nil, []string{"LD_PRELOAD=/tmp/x.so"}},
+		{func() sudoCmd { c := remoteCmd("foo"); c.program = "/home/dan/bin/systemctl"; return c }(), "danger", []string{"runs /home/dan/bin/systemctl, outside the root-owned directories"}, nil},
 	} {
 		c := h.remoteSudo(500)
 		c.send(approval(tc.cmd))
 		m := c.readMessage().msg
-		if m.Level != tc.level || strings.Join(m.Reasons, "|") != strings.Join(tc.reasons, "|") {
-			t.Errorf("%s %q: level %q reasons %q", tc.cmd.program, tc.cmd.argv, m.Level, m.Reasons)
+		s, err := sudoq.FromMessage(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sudoq.Level(s) != tc.level || !slices.Equal(m.Danger, tc.danger) || !slices.Equal(m.Env, tc.env) || !reflect.DeepEqual(m.Links, tc.cmd.links) {
+			t.Errorf("%s %q: level %q danger %q env %q links %+v", tc.cmd.program, tc.cmd.argv, sudoq.Level(s), m.Danger, m.Env, m.Links)
 		}
 	}
 	h.none()
@@ -230,7 +238,8 @@ func TestASignatureFromAListedKeyIsYes(t *testing.T) {
 	c.send(signed(t, k, r.raw))
 	c.want(replyYes, "")
 	log := h.log.String()
-	for _, want := range []string{`"outcome":"allow"`, `"key":"` + ssh.FingerprintSHA256(k.PublicKey()) + `"`, `"runas":"root"`, `"cwd":"/home/dan/src"`} {
+	for _, want := range []string{`"outcome":"allow"`, `"key":"` + ssh.FingerprintSHA256(k.PublicKey()) + `"`, `"runas":"root"`, `"cwd":"/home/dan/src"`,
+		`"version":2`, `"level":"normal"`, `"cmdlines_left_out":false`, `"chain":[{"Pid":401`} {
 		if !strings.Contains(log, want) {
 			t.Errorf("the journal lacks %s:\n%s", want, log)
 		}
@@ -382,18 +391,38 @@ func TestARemoteMessageWhoseSignRequestIsOverTheAgentLimitIsRefused(t *testing.T
 	c.send(approval(remoteCmd("foo")))
 	base := len(c.readMessage().raw)
 	room := sudomsg.MaxSize - (1 + 4 + len(k.PublicKey().Marshal()) + 4 + 4) - base - 4
+	cmdlines := 0
+	for _, l := range sshd() {
+		cmdlines += len(strings.Join(l.Cmdline, "\x00"))
+	}
+	top := len(strings.Join(sshd()[3].Cmdline, "\x00"))
 	for _, tc := range []struct {
-		n    int
-		fits bool
-	}{{room, true}, {room + 1, false}} {
+		n       int
+		fits    bool
+		leftOut int
+	}{{room, true, 0}, {room + 1, true, 1}, {room + top, true, 1}, {room + top + 1, true, 2}, {room + cmdlines, true, 4}, {room + cmdlines + 1, false, 0}} {
 		c := h.remoteSudo(501)
 		cmd := remoteCmd("foo")
 		cmd.argv = append(cmd.argv, strings.Repeat("x", tc.n))
 		c.send(approval(cmd))
-		if tc.fits {
-			c.readMessage()
-		} else {
+		if !tc.fits {
 			c.want(replyNo, "command too long for the gate")
+			continue
+		}
+		r := c.readMessage()
+		var out int
+		for _, l := range r.msg.Links {
+			if l.Cmdline == nil {
+				out++
+			}
+		}
+		for i, l := range r.msg.Links {
+			if (l.Cmdline == nil) != (i >= len(r.msg.Links)-out) {
+				t.Errorf("%d over: link %d's command line left out before one above it", tc.n-room, i)
+			}
+		}
+		if out != tc.leftOut || r.msg.Truncated != (out > 0) || len(r.msg.Argv) != 4 || len(r.msg.Argv[3]) != tc.n {
+			t.Errorf("%d over: %d command lines left out, truncated %v", tc.n-room, out, r.msg.Truncated)
 		}
 	}
 }

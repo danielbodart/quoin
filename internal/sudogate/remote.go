@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/sudomsg"
+	"github.com/danielbodart/quoin/internal/sudoq"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -47,32 +47,16 @@ func (s *session) approveRemote(req *request) {
 		s.reply(replyNo, "no nonce")
 		return
 	}
-	level := a.level()
-	if level == "normal" {
-		level = ""
-	}
-	argv := []string{a.program}
-	if len(a.argv) > 1 {
-		argv = append(argv, a.argv[1:]...)
-	}
-	var reasons []string
-	reasons = append(reasons, a.danger...)
-	reasons = append(reasons, galleyask.Warnings(a.r)...)
-	reasons = append(reasons, a.env...)
-	m := &sudomsg.Message{
-		Nonce: nonce, HostKeys: hosts, User: a.user, RunAs: a.runas, Cwd: a.cwd,
-		Argv: argv, Level: level, Reasons: reasons,
-	}
+	m := sudoq.Message(a.subject(), nonce, hosts)
 	blobs := make([][]byte, len(listed))
 	longest := 0
 	for i, k := range listed {
 		blobs[i] = k.Marshal()
 		longest = max(longest, len(blobs[i]))
 	}
-	raw, err := m.Marshal()
-	if err == nil && 1+4+longest+4+len(raw)+4 > sudomsg.MaxSize {
-		err = sudomsg.ErrTooLong
-	}
+	// The agent's sign request is the message, the key blob and flags,
+	// after its type byte and length: the message's room is what is left.
+	raw, err := m.MarshalWithin(sudomsg.MaxSize - (1 + 4 + longest + 4 + 4))
 	if err != nil {
 		s.record(a, "refuse", "message", []any{"remote", true, "err", err.Error()})
 		if errors.Is(err, sudomsg.ErrTooLong) {
@@ -154,7 +138,8 @@ func (s *session) recordRemote(c *challenge, outcome, source, keyFP string, extr
 	attrs := []any{
 		"remote", true, "chain", c.a.r.Chain, "pid", s.peer.Pid,
 		"nonce", hex.EncodeToString(m.Nonce), "host_keys", hosts, "user", m.User, "runas", m.RunAs,
-		"cwd", m.Cwd, "argv", m.Argv, "level", m.Level, "reasons", m.Reasons, "truncated", c.a.truncated,
+		"cwd", m.Cwd, "argv", m.Argv, "version", m.Version, "level", c.a.level(), "danger", m.Danger, "env", m.Env,
+		"cmdlines_left_out", m.Truncated, "truncated", c.a.truncated,
 		"key", keyFP, "outcome", outcome, "source", source,
 	}
 	s.g.Log.Info("decision", append(attrs, extra...)...)

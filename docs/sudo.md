@@ -218,8 +218,11 @@ There is no Always for sudo: a project's rule is written into
 
 ```
 claude@laptop> ssh -A desktop sudo systemctl restart foo
-                                    # laptop's galley: "sudo on desktop"
+                                    # laptop's galley: "sudo systemctl restart foo on desktop"
                                     #   /run/current-system/sw/bin/systemctl restart foo
+                                    #   dan as root in /home/dan
+                                    #   from here: claude ← ssh -A desktop sudo systemctl restart foo
+                                    #   [desktop's chain: PID / Process / Command]
                                     #   [Refuse] [Allow]
 ```
 
@@ -236,8 +239,14 @@ added to the plugin line; there are no new PAM lines. The client needs
 only `ForwardAgent` for the host.
 
 The gate classifies the command as for a local sudo and hands the plugin a
-message to sign: a nonce, the host's keys, the user, the runas user, the
-cwd, the resolved command, the level and the reasons. The plugin connects
+message to sign, `quoin-sudo-v2`: a nonce, the host's keys, the user, the
+runas user, the cwd, the resolved command, the danger lines, the
+variables outside the allowlist, and the sudo's process chain as the
+plugin read it as root, up to 16 links. A message over the agent's limit
+has the chain's command lines left out from the top of the chain down
+until it fits, and says so; the command, danger lines and variables are
+never cut, and what still does not fit is refused, "command too long for
+the gate". The plugin connects
 to the forwarded agent as the invoking user and asks for a plain signature
 with the first listed key the agent holds. quoin-signer on the client
 asks every time, naming the host from `/etc/ssh/ssh_known_hosts`, and

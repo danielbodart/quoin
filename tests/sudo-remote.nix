@@ -241,18 +241,27 @@ in
         server.succeed("rm -r /run/peer")
 
     with subtest("Allow: the command runs, asked once on the client and never on the server"):
-        asked, gated = len(events(client, "question")), len(gate())
+        asked, gated, signed = len(events(client, "question")), len(gate()), len(signs())
         rc, out = remote_sudo("sudo id -u")
         assert rc == 0 and out.strip().splitlines()[-1] == "0", repr((rc, out))
         qs = events(client, "question")[asked:]
         assert len(qs) == 1, qs
         q = qs[0]
-        assert q["title"] == "sudo on server" and q["level"] == "normal" and q["kind"] == "question", q
+        client.log(f"remote sudo question: {json.dumps(q)}")
+        assert q["title"] == "sudo id -u on server" and q["level"] == "normal" and q["kind"] == "question", q
         assert [b["label"] for b in q["buttons"]] == ["Refuse", "Allow"], q
         lines = q["text"].split("\n")
-        assert q["table"]["rows"][0][1] == "claude", q
+        # The table is server's chain, the sudo's own; claude, here on
+        # client, is only on its from-here line.
+        rows = q["table"]["rows"]
+        assert rows and all(r[1] != "claude" for r in rows) and q["table"]["summary"].startswith("server: "), q
+        assert lines[-2].startswith("from here: claude ← ssh -A server") and lines[-1].startswith("key SHA256:"), lines
+        assert [l for l in lines if "claude" in l] == [lines[-2]], lines
         assert "/run/current-system/sw/bin/id -u" in lines, lines
         assert "dan as root in /home/dan" in lines, lines
+        s = [d for d in signs()[signed:] if d["class"] == "remote sudo"]
+        assert len(s) == 1 and s[0]["version"] == 2 and s[0]["remote_chain"], signs()[signed:]
+        assert [l["Pid"] for l in s[0]["remote_chain"]][-1] == 1, s[0]
         assert events(server, "question") == []
         allowed = [d for d in gate()[gated:] if d.get("outcome") == "allow"]
         assert len(allowed) == 1, gate()[gated:]
@@ -273,8 +282,8 @@ in
         assert rc == 0, repr((rc, out))
         q = events(client, "question")[asked]
         d = gate()[-1]
-        assert q["level"] == "danger" and d["level"] == "danger" and d["reasons"], (q, d)
-        assert q["text"].split("\n")[0] == d["reasons"][0], (q, d)
+        assert q["level"] == "danger" and d["level"] == "danger" and d["danger"] and d["version"] == 2, (q, d)
+        assert q["text"].split("\n")[0] == d["danger"][0], (q, d)
         server.fail("systemctl is-active quoin-spare.service")
         server.succeed("systemctl start quoin-spare.service")
 
