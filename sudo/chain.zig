@@ -43,15 +43,67 @@ pub fn walk(pid: u32, links: *[max_links]Link) usize {
     return n;
 }
 
-/// Remote: a link named sshd-session running as `uid` whose parent is a
-/// uid-0 sshd-session.
-pub fn remote(links: []const Link, uid: u32) bool {
+/// An ssh login: a link named sshd-session running as `uid` whose parent
+/// is a uid-0 sshd-session. Not what arms remote mode, which is who serves
+/// SSH_AUTH_SOCK (isForwarder), but what keeps a login's sudo from asking
+/// the host's own galley when it is not armed.
+pub fn sshLogin(links: []const Link, uid: u32) bool {
     if (links.len < 2) return false;
     for (links[0 .. links.len - 1], links[1..]) |l, parent| {
         if (l.uid == uid and std.mem.eql(u8, l.comm(), "sshd-session") and
             parent.uid == 0 and std.mem.eql(u8, parent.comm(), "sshd-session")) return true;
     }
     return false;
+}
+
+/// A mosey session: a link of `uid`'s that is mosey's spawner, `mosey
+/// --serve=spawner`. Its comm is "exe", since mosey starts it from
+/// /proc/self/exe, so it is known by its argv: argv[0] is the path
+/// os.Executable gave the launcher, whose basename is mosey's.
+pub fn moseySession(links: []const Link, uid: u32) bool {
+    for (links) |*l| {
+        if (l.uid != uid) continue;
+        var args = std.mem.splitScalar(u8, l.cmdline(), 0);
+        if (!isMosey(std.fs.path.basename(args.first()))) continue;
+        while (args.next()) |a| if (std.mem.eql(u8, a, "--serve=spawner")) return true;
+    }
+    return false;
+}
+
+fn isMosey(base: []const u8) bool {
+    return std.mem.eql(u8, base, "mosey") or std.mem.eql(u8, base, ".mosey-wrapped");
+}
+
+/// Whether the program at `exe_path` is one that serves a forwarded agent:
+/// OpenSSH's sshd-session (sshd before OpenSSH 9.8), and mosey, which may
+/// be the user's own (~/.local/bin/mosey, mosey's D7), so where it lives is
+/// not asked; nixpkgs' wrapper renames it .mosey-wrapped.
+pub fn isForwarder(exe_path: []const u8) bool {
+    const base = std.fs.path.basename(exe_path);
+    return std.mem.eql(u8, base, "sshd-session") or std.mem.eql(u8, base, "sshd") or isMosey(base);
+}
+
+pub const max_exe_path = 4096;
+
+/// The path of the program `pid` runs, read as root: /proc/<pid>/exe on
+/// Linux, which only root reads for a process that is not dumpable, as
+/// sshd-session is not; proc_pidpath on macOS. Null when it cannot be
+/// read, does not fit, or is a deleted file.
+pub fn exePath(pid: u32, buf: *[max_exe_path]u8) ?[]const u8 {
+    const p: []const u8 = if (darwin) blk: {
+        const c = @import("abi").c;
+        const n = c.proc_pidpath(@intCast(pid), buf, buf.len);
+        if (n <= 0) return null;
+        break :blk buf[0..@intCast(n)];
+    } else blk: {
+        var path: [32]u8 = undefined;
+        const linux = std.os.linux;
+        const rc = linux.readlink(procPath(&path, pid, "exe"), buf, buf.len);
+        if (linux.E.init(rc) != .SUCCESS or rc == 0 or rc >= buf.len) return null;
+        break :blk buf[0..rc];
+    };
+    if (std.mem.endsWith(u8, p, " (deleted)")) return null;
+    return p;
 }
 
 const Stat = struct { comm: []const u8, ppid: u32, tty: u32, start: u64 };
@@ -180,12 +232,75 @@ fn link(comm: []const u8, uid: u32) Link {
     return l;
 }
 
-test "a user's sshd-session under root's is remote, and nothing else is" {
-    const remote_chain = [_]Link{ link("bash", 1000), link("sshd-session", 1000), link("sshd-session", 0), link("sshd", 0) };
-    try testing.expect(remote(&remote_chain, 1000));
-    try testing.expect(!remote(&remote_chain, 1001));
+test "a user's sshd-session under root's is an ssh login, and nothing else is" {
+    const login = [_]Link{ link("bash", 1000), link("sshd-session", 1000), link("sshd-session", 0), link("sshd", 0) };
+    try testing.expect(sshLogin(&login, 1000));
+    try testing.expect(!sshLogin(&login, 1001));
     const detached = [_]Link{ link("sh", 1000), link("systemd", 0) };
-    try testing.expect(!remote(&detached, 1000));
+    try testing.expect(!sshLogin(&detached, 1000));
     const both_user = [_]Link{ link("sshd-session", 1000), link("sshd-session", 1000) };
-    try testing.expect(!remote(&both_user, 1000));
+    try testing.expect(!sshLogin(&both_user, 1000));
+}
+
+fn withCmdline(comm: []const u8, uid: u32, cmdline: []const u8) Link {
+    var l = link(comm, uid);
+    @memcpy(l.cmdline_buf[0..cmdline.len], cmdline);
+    l.cmdline_len = @intCast(cmdline.len);
+    return l;
+}
+
+test "a user's mosey --serve=spawner, its comm exe, is a mosey session, and nothing else is" {
+    const session = [_]Link{
+        withCmdline("bash", 1000, "bash"),
+        withCmdline(".claude-unwrapp", 1000, "claude"),
+        withCmdline("exe", 1000, "/nix/store/x-mosey/bin/mosey\x00--serve=spawner"),
+        withCmdline("systemd", 0, "/run/current-system/systemd/lib/systemd/systemd"),
+    };
+    try testing.expect(moseySession(&session, 1000));
+    try testing.expect(!moseySession(&session, 1001));
+    try testing.expect(!sshLogin(&session, 1000));
+    const cases = [_]struct { cmdline: []const u8, uid: u32, want: bool }{
+        .{ .cmdline = "/home/dan/.local/bin/mosey\x00--serve=spawner", .uid = 1000, .want = true },
+        .{ .cmdline = "/nix/store/x-mosey/bin/.mosey-wrapped\x00--serve=spawner", .uid = 1000, .want = true },
+        .{ .cmdline = "mosey\x00--serve=spawner", .uid = 1000, .want = true },
+        .{ .cmdline = "/nix/store/x-mosey/bin/mosey\x00--serve=spawner", .uid = 1001, .want = false },
+        .{ .cmdline = "/nix/store/x-mosey/bin/mosey\x00--serve", .uid = 1000, .want = false },
+        .{ .cmdline = "/nix/store/x-mosey/bin/mosey\x00--serve=proto", .uid = 1000, .want = false },
+        .{ .cmdline = "/bin/sh\x00--serve=spawner", .uid = 1000, .want = false },
+        .{ .cmdline = "--serve=spawner", .uid = 1000, .want = false },
+        .{ .cmdline = "/bin/mosey-relay\x00--serve=spawner", .uid = 1000, .want = false },
+        .{ .cmdline = "", .uid = 1000, .want = false },
+    };
+    for (cases) |cs| {
+        const one = [_]Link{ withCmdline("sh", 1000, "sh"), withCmdline("exe", cs.uid, cs.cmdline) };
+        try testing.expectEqual(cs.want, moseySession(&one, 1000));
+    }
+}
+
+test "sshd-session, sshd and mosey wherever they live, a user's own included, are forwarders, and nothing else is" {
+    for ([_][]const u8{
+        "/nix/store/x-openssh-10.6p1/libexec/sshd-session",
+        "/usr/sbin/sshd",
+        "/nix/store/x-mosey/bin/mosey",
+        "/home/dan/.local/bin/mosey",
+        "/nix/store/x-mosey/bin/.mosey-wrapped",
+    }) |p| try testing.expect(isForwarder(p));
+    for ([_][]const u8{
+        "/run/current-system/sw/bin/ssh-agent",
+        "/nix/store/x-socat/bin/socat",
+        "/home/dan/.local/bin/mosey-relay",
+        "/home/dan/mosey/bin/exe",
+        "/usr/sbin/sshd-session (deleted)",
+        "",
+        "/",
+    }) |p| try testing.expect(!isForwarder(p));
+}
+
+test "exePath is the program a process runs, and null for no such process" {
+    var buf: [max_exe_path]u8 = undefined;
+    var self_buf: [max_exe_path]u8 = undefined;
+    const self = try std.fs.selfExePath(&self_buf);
+    const pid: u32 = @intCast(if (darwin) std.c.getpid() else std.os.linux.getpid());
+    try testing.expectEqualStrings(self, exePath(pid, &buf).?);
+    try testing.expect(exePath(std.math.maxInt(i32), &buf) == null);
 }

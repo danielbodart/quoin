@@ -95,9 +95,12 @@ would and found an audit plugin for this sudo's version.
 
 ## What is gated
 
-A sudo of `forUser`'s with no tty, not under an ssh login, and not `-v` or
-`-l`. Everything else is stock sudo: a terminal, another user, root,
-`ssh host 'sudo -S …'`, unless remote mode takes it.
+A sudo of `forUser`'s with no tty, not under an ssh login or in a mosey
+session, and not `-v` or `-l`. Everything else is stock sudo: a terminal,
+another user, root, `ssh host 'sudo -S …'`, unless remote mode takes it.
+An ssh login is the user's `sshd-session` under root's in the sudo's
+chain; a mosey session is the user's `mosey --serve=spawner` in it,
+known by its argv since its comm is `exe`.
 
 A gated sudo skips `pam_unix` and asks the gate. With no tty, `-S`, `-A`,
 a sudoers ticket and NOPASSWD are all ignored: the dialog's password is
@@ -227,7 +230,7 @@ claude@laptop> ssh -A desktop sudo systemctl restart foo
 ```
 
 On a host whose gate has `remoteKeys`, a sudo of `forUser`'s with no tty
-under an ssh login with a forwarded agent is approved by a signature from
+whose `SSH_AUTH_SOCK` is a forwarded agent is approved by a signature from
 one of those keys:
 
 ```nix
@@ -237,6 +240,20 @@ services.quoin.sudo.remoteKeys = [ "ecdsa-sha2-nistp256 AAAA… alice@laptop" ];
 The keys are written to `/etc/quoin/sudo.json` and `remote` is
 added to the plugin line; there are no new PAM lines. The client needs
 only `ForwardAgent` for the host.
+
+The agent is forwarded when the process serving `SSH_AUTH_SOCK` is a
+forwarder. At open the plugin connects to the socket as the invoking user,
+takes the listener's pid and uid from `SO_PEERCRED`, and reads its program
+from `/proc/<pid>/exe` as root (an `sshd-session` is not dumpable, so the
+user cannot). It is a forwarder when it runs as the invoking user and its
+program is `sshd-session` (`sshd` before OpenSSH 9.8) or mosey (`mosey` or
+nixpkgs' `.mosey-wrapped`, wherever it lives, `~/.local/bin` included).
+The connection is kept and the signature asked on it, so the sudo opens
+one forwarded channel, not two. This is who serves the agent, not what the
+chain looks like, so a sudo reparented away from its login (`setsid`,
+tmux) or run under mosey, whose spawner is no `sshd-session`, is remote
+all the same. The connect never waits: a listener with a full backlog is
+no agent.
 
 The gate classifies the command as for a local sudo and hands the plugin a
 message to sign, `quoin-sudo-v2`: a nonce, the host's keys, the user, the
@@ -270,7 +287,11 @@ sends v2.
 
 A sudo with a tty (`ssh -t`) asks the host's own password, as stock. No
 forwarded agent, no `remoteKeys`, or the gate down is stock too: "a
-terminal is required". The agent refusing, failing or holding no listed
+terminal is required". So is an agent that is not forwarded -- an
+`ssh-agent` started in the login, a relay of another program's or another
+user's, a socket nobody listens on -- for a sudo in an ssh login or a
+mosey session, which never asks the host's own galley. A detached sudo
+with no forwarded agent is gated locally, as any other. The agent refusing, failing or holding no listed
 key refuses the sudo:
 
 ```
@@ -295,11 +316,12 @@ no local mode and no gate daemon: remote mode reads no rules, and the
 plugin (`sudo/quoin_sudo_darwin.zig`) does the gate's remote half in sudo's
 own process. It is the Linux plugin and gate, step for step:
 
-- **open** arms on the Linux conditions, in the Linux order: the gated
-  user, not `-l` or `-v`, no tty, a chain with the user's `sshd-session`
-  under root's (read with `sysctl` where Linux reads `/proc`), `remote`,
-  an absolute `SSH_AUTH_SOCK`, and listed keys that parse. Any miss is
-  stock sudo.
+- **open** arms on the gated user, not `-l` or `-v`, no tty, a chain
+  with the user's `sshd-session` under root's (read with `sysctl` where
+  Linux reads `/proc`), `remote`, an absolute `SSH_AUTH_SOCK`, and listed
+  keys that parse. Any miss is stock sudo. It does not yet ask who serves
+  the agent, as Linux does: a reparented sudo or one under mosey is stock
+  on a Mac.
 - **PAM**: `quoin_sudo_pam.so`, `sufficient`, first in `sudo_local` (macOS
   has no `pam_exec`). The Linux helper's tests, then, where it asks the
   gate whether its sudo checked in, it asks the plugin in the same sudo

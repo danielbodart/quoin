@@ -109,7 +109,7 @@ fn remoteGated(user: [*:0]const u8) bool {
     if (lookup(user_info, "tty") != null) return false;
     const uid = number(user_info, "uid") orelse return false;
     const n = chain.walk(chain.parentPid(), &links);
-    return config.force_remote or chain.remote(links[0..n], uid);
+    return config.force_remote or chain.sshLogin(links[0..n], uid);
 }
 
 fn keepAgentPath(user_env: CArray) bool {

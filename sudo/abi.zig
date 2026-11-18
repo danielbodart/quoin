@@ -1,7 +1,7 @@
 //! The one file that reads C headers: sudo's plugin API, PAM's, and the
 //! libc id calls the drop for the agent's connect makes; on macOS also the
-//! PAM module API, sysctl's kinfo_proc and dlfcn, which the darwin build
-//! uses in place of /proc and the gate.
+//! PAM module API, sysctl's kinfo_proc, proc_pidpath and dlfcn, which the
+//! darwin build uses in place of /proc and the gate.
 
 const builtin = @import("builtin");
 
@@ -15,6 +15,7 @@ pub const c = @cImport({
         @cInclude("security/pam_modules.h");
         @cInclude("sys/sysctl.h");
         @cInclude("dlfcn.h");
+        @cInclude("libproc.h");
     }
 });
 

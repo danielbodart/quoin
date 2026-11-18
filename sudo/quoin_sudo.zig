@@ -1,5 +1,14 @@
 //! quoin_audit, the audit plugin sudo loads with the option user=<forUser>,
 //! and `remote` when the gate lists remote keys.
+//!
+//! A gated sudo is remote when the process serving its SSH_AUTH_SOCK is a
+//! forwarder (chain.isForwarder): the plugin connects to the agent as the
+//! invoking user at open, asks the kernel who listens, reads that
+//! process's program as root, and keeps the connection for the signature.
+//! So a sudo reparented away from its login, or under mosey, whose spawner
+//! is no sshd-session, is remote all the same. One that is not remote but
+//! is in an ssh login or a mosey session is stock: it never asks this
+//! host's own galley for someone who is not at it.
 
 const std = @import("std");
 const abi = @import("abi");
@@ -22,6 +31,14 @@ var gate: ?fd.Sock = null;
 var remote_check_in = false;
 var agent_path_buf: [108]u8 = undefined;
 var agent_path: []const u8 = "";
+/// The forwarded agent's connection, made at open and kept for the
+/// signature, so no second connect opens a second forwarded channel.
+var agent_conn: ?fd.Sock = null;
+/// The drop to the invoking user, or the restore, failed at open.
+var drop_failed = false;
+/// open found a remote sudo, by its agent, but the gate did not take it.
+var remote_stock = false;
+var exe_buf: [chain.max_exe_path]u8 = undefined;
 
 var links: [chain.max_links]chain.Link = undefined;
 var request: [wire.max_request]u8 = undefined;
@@ -67,7 +84,9 @@ fn number(a: wire.CArray, key: []const u8) ?u32 {
     return std.fmt.parseInt(u32, std.mem.span(lookup(a, key) orelse return null), 10) catch null;
 }
 
-const Gating = struct { links: usize, remote: bool };
+/// `login`: the chain is an ssh login's or a mosey session's, or the test
+/// build takes every chain for remote.
+const Gating = struct { links: usize, uid: u32, login: bool };
 
 /// The gating test without the mode: the gated user with no tty. Fills
 /// `links`.
@@ -77,7 +96,18 @@ fn gating(user: [*:0]const u8) ?Gating {
     if (lookup(user_info, "tty") != null) return null;
     const uid = number(user_info, "uid") orelse return null;
     const n = chain.walk(@intCast(std.os.linux.getppid()), &links);
-    return .{ .links = n, .remote = config.force_remote or chain.remote(links[0..n], uid) };
+    const l = links[0..n];
+    return .{ .links = n, .uid = uid, .login = config.force_remote or chain.sshLogin(l, uid) or chain.moseySession(l, uid) };
+}
+
+/// Whether `conn`'s listener is a forwarder of the invoking user's: its
+/// uid as the kernel recorded it, and its program read as root, since an
+/// sshd-session is not dumpable.
+fn forwarded(conn: ?fd.Sock, uid: u32) bool {
+    const s = conn orelse return false;
+    if ((s.peerUid() catch return false) != uid) return false;
+    const exe = chain.exePath(s.peerPid() catch return false, &exe_buf) orelse return false;
+    return chain.isForwarder(exe);
 }
 
 /// Keeps a non-empty, absolute SSH_AUTH_SOCK that fits sun_path.
@@ -106,17 +136,28 @@ fn open(
     settings = settings_in;
     user_info = user_info_in;
     remote_check_in = false;
+    remote_stock = false;
+    drop_failed = false;
+    closeAgent();
     agent_path = "";
     gated_user = lookup(plugin_options, "user");
     const user = gated_user orelse return 1;
     if (config.misread_mode or listOrValidate(submit_argv, submit_optind)) return 1;
     const g = gating(user) orelse return 1;
-    if (g.remote) {
-        if (!has(plugin_options, "remote") or !keepAgentPath(submit_envp)) return 1;
-        gate = checkIn(true) catch return 1;
+    const wants = has(plugin_options, "remote") and keepAgentPath(submit_envp);
+    const conn = if (wants) connectAgent() else null;
+    if (wants and (config.force_remote or forwarded(conn, g.uid))) {
+        remote_stock = true;
+        gate = checkIn(true) catch {
+            if (conn) |s| s.close();
+            return 1;
+        };
         remote_check_in = true;
+        agent_conn = conn;
         return 1;
     }
+    if (conn) |s| s.close();
+    if (drop_failed or g.login) return 1;
     gate = checkIn(false) catch {
         say(c.SUDO_CONV_ERROR_MSG, gate_not_running);
         return 1;
@@ -161,7 +202,13 @@ fn close(status_type: c_int, status: c_int) callconv(.c) void {
     _ = .{ status_type, status };
     if (gate) |s| s.close();
     gate = null;
+    closeAgent();
     remote_check_in = false;
+}
+
+fn closeAgent() void {
+    if (agent_conn) |s| s.close();
+    agent_conn = null;
 }
 
 fn accept(
@@ -178,7 +225,11 @@ fn accept(
     const user = gated_user orelse return 1;
     const g = gating(user) orelse return 1;
     const s = gate orelse {
-        if (g.remote) return 1;
+        if (drop_failed) {
+            errstr.* = "cannot drop to the invoking user";
+            return 0;
+        }
+        if (remote_stock or g.login) return 1;
         errstr.* = "gate not running";
         return 0;
     };
@@ -226,23 +277,43 @@ fn remoteAnswer(s: fd.Sock, errstr: [*c][*c]const u8) c_int {
     return answer(readReply(s, .yes_no) catch return noAnswer(errstr));
 }
 
-/// The 'S' for `m`: connect to the forwarded agent as the invoking user,
-/// then sign as sudo. error.Drop when a drop or restore failed.
+/// The 'S' for `m`, signed on the connection open made. error.Drop when
+/// open's drop or restore failed.
 fn agentStep(m: wire.Signing) error{Drop}![]u8 {
-    const uid = number(user_info, "uid") orelse return error.Drop;
-    const gid = number(user_info, "gid") orelse return error.Drop;
-    const groups = groupList(lookup(user_info, "groups") orelse return error.Drop) orelse return error.Drop;
-    if (config.log_ids) logIds("before the drop");
-    const s = ids.connectAs(ids.Libc, agent_path, uid, gid, groups) catch |e| switch (e) {
-        error.Connect => return wire.signFailed(&signature_request, "cannot connect to the forwarded agent"),
-        error.Drop, error.Restore => return error.Drop,
-    };
-    if (config.log_ids) logIds("after the restore");
-    defer s.close();
+    if (drop_failed) return error.Drop;
+    const s = agent_conn orelse return wire.signFailed(&signature_request, "cannot connect to the forwarded agent");
     return switch (agent.sign(s, m.keys, m.message, &agent_buf)) {
         .signed => |x| wire.signature(&signature_request, x.key, x.signature),
         .failed => |why| wire.signFailed(&signature_request, why),
     };
+}
+
+const Invoking = struct { uid: u32, gid: u32, groups: []const u32 };
+
+/// The invoking user's ids, from user_info.
+fn invokingIds() ?Invoking {
+    return .{
+        .uid = number(user_info, "uid") orelse return null,
+        .gid = number(user_info, "gid") orelse return null,
+        .groups = groupList(lookup(user_info, "groups") orelse return null) orelse return null,
+    };
+}
+
+/// Connects to the agent at agent_path as the invoking user, never as
+/// root: root's CAP_DAC_OVERRIDE passes the socket's modes. Null when it
+/// cannot, with drop_failed set when the drop or the restore failed.
+fn connectAgent() ?fd.Sock {
+    const who = invokingIds() orelse {
+        drop_failed = true;
+        return null;
+    };
+    if (config.log_ids) logIds("before the drop");
+    const s = ids.connectAs(ids.Libc, agent_path, who.uid, who.gid, who.groups) catch |e| {
+        if (e != error.Connect) drop_failed = true;
+        return null;
+    };
+    if (config.log_ids) logIds("after the restore");
+    return s;
 }
 
 var log_groups: [ids.max_groups]u32 = undefined;

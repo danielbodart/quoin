@@ -91,27 +91,45 @@ pub const Sock = struct {
 
     /// SO_PEERCRED's uid: the peer as the kernel recorded it at connect.
     pub fn peerUid(self: Sock) Error!u32 {
-        var cred: extern struct { pid: i32, uid: u32, gid: u32 } = undefined;
+        return (try self.peerCred()).uid;
+    }
+
+    /// SO_PEERCRED's pid: the process that listened on the socket, as the
+    /// kernel recorded it at connect.
+    pub fn peerPid(self: Sock) Error!u32 {
+        const pid = (try self.peerCred()).pid;
+        if (pid <= 0) return error.Sys;
+        return @intCast(pid);
+    }
+
+    const Cred = extern struct { pid: i32, uid: u32, gid: u32 };
+
+    fn peerCred(self: Sock) Error!Cred {
+        var cred: Cred = undefined;
         var len: linux.socklen_t = @sizeOf(@TypeOf(cred));
         if (failed(linux.getsockopt(self.raw(), linux.SOL.SOCKET, linux.SO.PEERCRED, @ptrCast(&cred), &len))) return error.Sys;
-        return cred.uid;
+        return cred;
     }
 };
 
 /// Connects to the unix socket at `path`, SOCK_CLOEXEC. Nothing on it is
-/// bounded in time: a gate that is not there refuses the connect, and one
-/// that goes, or whose socket systemd closes, ends a send or read with an
-/// error or EOF.
+/// bounded in time, and the connect never waits: a gate or agent that is
+/// not there refuses it, as does one whose backlog is full, so a listener
+/// that never accepts cannot hold sudo at open. One that goes, or whose
+/// socket systemd closes, ends a send or read with an error or EOF.
 pub fn connectUnix(path: []const u8) Error!Sock {
     var addr: linux.sockaddr.un = .{ .path = @splat(0) };
     if (path.len >= addr.path.len) return error.Sys;
     @memcpy(addr.path[0..path.len], path);
-    const rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
+    const rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC | linux.SOCK.NONBLOCK, 0);
     if (failed(rc)) return error.Sys;
     const sock = try adopt(@intCast(rc));
     errdefer sock.close();
     const s = live(sock.slot, sock.gen);
     if (failed(linux.connect(s.raw, @ptrCast(&addr), @sizeOf(linux.sockaddr.un)))) return error.Sys;
+    const fl = linux.fcntl(s.raw, linux.F.GETFL, 0);
+    if (failed(fl)) return error.Sys;
+    if (failed(linux.fcntl(s.raw, linux.F.SETFL, fl & ~@as(usize, 1 << @bitOffsetOf(linux.O, "NONBLOCK"))))) return error.Sys;
     return sock;
 }
 
@@ -167,6 +185,42 @@ test "a connect to a socket no one listens on is refused, and one queued when th
     var b: [1]u8 = undefined;
     try std.testing.expectError(error.Sys, s.recvFull(&b));
     try std.testing.expectError(error.Sys, connectUnix("fd-test.sock"));
+}
+
+test "peerPid and peerUid are the listener's, this process for a listener of its own" {
+    std.posix.unlink("fd-peer-test.sock") catch |err| std.debug.assert(err == error.FileNotFound);
+    defer std.posix.unlink("fd-peer-test.sock") catch |err| std.debug.panic("unlink: {}", .{err});
+    const addr = try std.net.Address.initUnix("fd-peer-test.sock");
+    const l = try std.posix.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
+    defer std.posix.close(l);
+    try std.posix.bind(l, &addr.any, addr.getOsSockLen());
+    try std.posix.listen(l, 1);
+    const s = try connectUnix("fd-peer-test.sock");
+    defer s.close();
+    try std.testing.expectEqual(@as(u32, @intCast(linux.getpid())), try s.peerPid());
+    try std.testing.expectEqual(linux.getuid(), try s.peerUid());
+}
+
+test "a connect to a listener whose backlog is full is refused, not waited on, and a connected socket blocks" {
+    std.posix.unlink("fd-full-test.sock") catch |err| std.debug.assert(err == error.FileNotFound);
+    defer std.posix.unlink("fd-full-test.sock") catch |err| std.debug.panic("unlink: {}", .{err});
+    const addr = try std.net.Address.initUnix("fd-full-test.sock");
+    const l = try std.posix.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
+    defer std.posix.close(l);
+    try std.posix.bind(l, &addr.any, addr.getOsSockLen());
+    try std.posix.listen(l, 0);
+    var held: [3]?Sock = @splat(null);
+    defer for (held) |h| if (h) |x| x.close();
+    var refused = false;
+    for (&held) |*h| {
+        h.* = connectUnix("fd-full-test.sock") catch {
+            refused = true;
+            break;
+        };
+    }
+    try std.testing.expect(refused and held[0] != null);
+    const fl = linux.fcntl(live(held[0].?.slot, held[0].?.gen).raw, linux.F.GETFL, 0);
+    try std.testing.expect(!failed(fl) and fl & (1 << @bitOffsetOf(linux.O, "NONBLOCK")) == 0);
 }
 
 test "readFile reads a file and says null for one that cannot be read" {

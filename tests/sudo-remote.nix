@@ -76,6 +76,14 @@ let
         f.readline()
   '';
 
+  # A program whose basename is mosey's, as quoin-sudo knows mosey by its
+  # exe: socat, copied under that name, so it relays as mosey's spawner
+  # does, a listener of the user's serving the login's forwarded agent.
+  moseyRelay = pkgs.runCommand "mosey-relay" { } ''
+    mkdir -p $out/bin
+    cp ${pkgs.socat}/bin/socat $out/bin/mosey
+  '';
+
   sleeper = { wantedBy = [ "multi-user.target" ]; serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity"; };
 in
 {
@@ -312,22 +320,23 @@ in
         server.succeed("journalctl -t sudo --no-pager | tail -n 3 | grep -F 'COMMAND=/run/current-system/sw/bin/bash -c whoami'")
 
     with subtest("Relayed socket: a socket from second is refused by the signer, and sudo refuses"):
-        # socat says "listening on" once it is bound; the relay is a socket
-        # unit, bound before systemd-run returns.
+        # socat says "listening on" once it is bound. The relay on server
+        # is mosey-shaped, so quoin-sudo takes it for a forwarder and only
+        # the signer's host-key binding stands in its way.
         h = launch("ssh -n -A second 'exec socat -d -d TCP-LISTEN:7777,reuseaddr,fork UNIX-CONNECT:\"$SSH_AUTH_SOCK\"' & true")
         wait(h)
         await_lines(client, 1, "listening on", "tail", "-n", "+1", "-F", h[1])
-        server.succeed("install -d -o dan -g users -m 0700 /run/relay")
-        server.succeed("systemd-run --uid=dan --gid=users --unit=relay "
-                       "--socket-property=ListenStream=/run/relay/agent --socket-property=SocketUser=dan --socket-property=SocketMode=0600 "
-                       "socat ACCEPT-FD:3,fork TCP:second:7777")
+        server.succeed("install -d -o dan -g users -m 0700 /run/relay && ln -s ${moseyRelay}/bin/mosey /run/relay/exe")
+        server.succeed("runuser -u dan -- setsid -f /run/relay/exe -d -d UNIX-LISTEN:/run/relay/agent,fork,perm=0600 TCP:second:7777 "
+                       "</dev/null >/dev/null 2>/run/relay/log")
+        await_lines(server, 1, "listening on", "tail", "-n", "+1", "-F", "/run/relay/log")
         asked, signed = len(events(client, "question")), len(signs())
         rc, out = remote_sudo("SSH_AUTH_SOCK=/run/relay/agent sudo touch /root/relayed", ssh="ssh -a")
         assert rc != 0 and "quoin-sudo: the forwarded agent refused" in out, repr((rc, out))
         server.fail("test -e /root/relayed")
         assert len(events(client, "question")) == asked
         client.succeed("journalctl --sync && journalctl -u quoin-signer.service -o cat | grep -F \"not one of the message's host keys\"")
-        server.succeed("systemctl stop relay.socket relay.service")
+        server.succeed("pkill -f '^/run/relay/exe ' && rm -r /run/relay")
         second.succeed("pkill -u dan socat")
 
     with subtest("Stock agent: a listed file key signs with no question anywhere"):

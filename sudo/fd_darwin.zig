@@ -85,6 +85,17 @@ pub const Sock = struct {
         }
         return done;
     }
+
+    /// LOCAL_PEERPID: the process that listened on the socket, as the
+    /// kernel recorded it at connect, as Linux's SO_PEERCRED pid.
+    pub fn peerPid(self: Sock) Error!u32 {
+        const sol_local = 0;
+        const local_peerpid = 2;
+        var pid: c.pid_t = 0;
+        var len: c.socklen_t = @sizeOf(c.pid_t);
+        if (c.getsockopt(self.raw(), sol_local, local_peerpid, @ptrCast(&pid), &len) != 0 or pid <= 0) return error.Sys;
+        return @intCast(pid);
+    }
 };
 
 /// Connects to the unix socket at `path`, close-on-exec and SO_NOSIGPIPE.
@@ -134,6 +145,7 @@ test "a connect to a socket no one listens on is refused, and a send to one that
     const s = try connectUnix("fd-test.sock");
     defer s.close();
     const conn = try std.posix.accept(l, null, null, 0);
+    try std.testing.expectEqual(@as(u32, @intCast(c.getpid())), try s.peerPid());
     std.posix.close(conn);
     std.posix.close(l);
     var b: [1]u8 = undefined;
