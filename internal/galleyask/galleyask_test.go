@@ -165,6 +165,10 @@ func TestTheQuestionsEncodeToTheGoldenBytes(t *testing.T) {
 			Text: "touches a unit that guards this machine\n\nclaude (pid 5113) ← bash\n/run/current-system/sw/bin/systemctl stop sshd.service"},
 		"remote-sudo-question.json": {Title: "sudo on dan-desktop", Level: "danger", Allow: "Allow",
 			Text: "touches a unit that guards this machine\n\nclaude ← ssh -A dan-desktop sudo systemctl stop sshd.service\n/run/current-system/sw/bin/systemctl stop sshd.service\ndan as root in /home/dan\nkey SHA256:… (dan@dan-blade)"},
+		"remote-sudo-question-v2.json": {Title: "sudo systemctl stop sshd.service on dan-desktop", Level: "danger", Allow: "Allow",
+			Text: "touches a unit that guards this machine\n\n/run/current-system/sw/bin/systemctl stop sshd.service\ndan as root in /home/dan\n\nfrom here: claude ← ssh -A dan-desktop sudo systemctl stop sshd.service\nkey SHA256:… (dan@dan-blade)",
+			Chain: &ChainTable{Rows: [][]string{{"4241", "claude", ""}, {"4242", "bash", "bash -c sudo systemctl stop sshd.service"}},
+				Summary: "dan-desktop: claude ← sudo systemctl stop sshd.service"}},
 	} {
 		t.Run(file, func(t *testing.T) {
 			g := startGalley(t, golden(t, "answer-cancel.json"), true)

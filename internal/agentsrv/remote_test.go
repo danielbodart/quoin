@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,8 @@ import (
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/grant"
 	"github.com/danielbodart/quoin/internal/sudomsg"
+	"github.com/danielbodart/quoin/internal/sudoq"
+	"github.com/danielbodart/quoin/peer"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -240,5 +244,129 @@ func TestACutClientChainRaisesARemoteSudoToWarningAndSaysSo(t *testing.T) {
 		}
 		a.reply <- answered{}
 		wait(t, done)
+	}
+}
+
+// serverChain is a sudo's chain on the host it runs on: bash under claude
+// under the login's sshd-session pair.
+func serverChain() []peer.Link {
+	return []peer.Link{
+		{Pid: 4242, PPid: 4241, Start: 900, UID: 1000, Comm: "bash", Cmdline: []string{"bash", "-c", "sudo systemctl stop sshd.service"}},
+		{Pid: 4241, PPid: 764, Start: 800, UID: 1000, Comm: ".claude-unwrapp", Cmdline: []string{"claude"}},
+		{Pid: 764, PPid: 761, Start: 700, UID: 1000, Comm: "sshd-session", Cmdline: []string{"sshd-session: dan@notty"}},
+		{Pid: 761, PPid: 692, Start: 690, Comm: "sshd-session", Cmdline: []string{"sshd-session: dan [priv]"}},
+		{Pid: 692, PPid: 1, Start: 100, Comm: "sshd", Cmdline: []string{"sshd: sshd -D [listener]"}},
+		{Pid: 1, Start: 1, Comm: "systemd", Cmdline: []string{"/sbin/init"}},
+	}
+}
+
+func sudoSubject(chain []peer.Link) sudoq.Subject {
+	return sudoq.Subject{
+		Argv: []string{"/run/current-system/sw/bin/systemctl", "stop", "sshd.service"},
+		User: "dan", RunAs: "root", Cwd: "/home/dan",
+		Danger: []string{"touches a unit that guards this machine"}, Env: []string{"LD_PRELOAD=/tmp/x.so"},
+		Chain: peer.FromLinks(chain),
+	}
+}
+
+func sudoMessageV2(t *testing.T, s sudoq.Subject, hosts ...ssh.PublicKey) []byte {
+	t.Helper()
+	var blobs [][]byte
+	for _, h := range hosts {
+		blobs = append(blobs, h.Marshal())
+	}
+	b, err := sudoq.Message(s, bytes.Repeat([]byte{7}, sudomsg.NonceSize), blobs).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestAV2RemoteSudoIsAskedAsItsHostWouldAskItWithThisMachineOnlyFromHere(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	fp := ssh.FingerprintSHA256(h.key(0))
+	s := sudoSubject(serverChain())
+	done := h.forwarded(h.github).signAsync(h.key(0), sudoMessageV2(t, s, h.github.PublicKey()))
+	a := h.next()
+	local := sudoq.Question(s, sudoq.Options{})
+	want := local.Text + "\n\nfrom here: " + galleyask.Summary(claude(100)) + "\nkey " + fp + " (dan@test)"
+	if a.q.Title != "sudo systemctl stop sshd.service on github.com" || a.q.Level != "danger" || a.q.Text != want {
+		t.Errorf("asked %q %q\n%s\nwant\n%s", a.q.Title, a.q.Level, a.q.Text, want)
+	}
+	if !reflect.DeepEqual(a.q.Chain.Rows, local.Chain.Rows) || a.q.Chain.Summary != "github.com: claude ← sudo systemctl stop sshd.service" {
+		t.Errorf("table %+v", a.q.Chain)
+	}
+	if a.q.Grantable || a.q.Password || a.q.Allow != "Allow" {
+		t.Errorf("asked %+v", a.q)
+	}
+	a.reply <- answered{a: galleyask.Answer{Allowed: true}}
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+	log := h.log.String()
+	for _, w := range []string{`"remote_chain":[{"Pid":4242`, `"sshd-session: dan@notty"`, `"version":2`, `"danger":["touches a unit that guards this machine"]`,
+		`"env":["LD_PRELOAD=/tmp/x.so"]`, `"cmdlines_left_out":false`, `"chain":[{"Pid":103`, `"outcome":"sign"`} {
+		if !strings.Contains(log, w) {
+			t.Errorf("the journal lacks %s:\n%s", w, log)
+		}
+	}
+}
+
+func TestAV2RemoteSudoIsAWarningWhenEitherChainIsCutAndSaysWhich(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	plain := sudoSubject(serverChain())
+	plain.Danger, plain.Env = nil, nil
+	cutThere := plain
+	cutThere.Chain = peer.FromLinks(serverChain()[:2])
+	for _, tc := range []struct {
+		name  string
+		s     sudoq.Subject
+		here  *peer.Requester
+		level string
+		lines []string
+	}{
+		{"neither", plain, claude(100), "normal", nil},
+		{"there", cutThere, claude(100), "warning", []string{"the process chain was cut short"}},
+		{"here", plain, links(claude(100).Chain[:4]...), "warning", []string{"from here: the process chain was cut short"}},
+	} {
+		c := h.dial(tc.here)
+		if err := c.bind(t, h.github, []byte("sid"), true); err != nil {
+			t.Fatal(err)
+		}
+		done := c.signAsync(h.key(0), sudoMessageV2(t, tc.s, h.github.PublicKey()))
+		a := h.next()
+		text := strings.Split(a.q.Text, "\n")
+		for _, l := range tc.lines {
+			if !slices.Contains(text, l) {
+				t.Errorf("%s: no %q in\n%s", tc.name, l, a.q.Text)
+			}
+		}
+		if a.q.Level != tc.level || (tc.lines == nil && strings.Contains(a.q.Text, "cut short")) {
+			t.Errorf("%s: asked %q\n%s", tc.name, a.q.Level, a.q.Text)
+		}
+		a.reply <- answered{}
+		wait(t, done)
+	}
+}
+
+func TestAV2RemoteSudoThatIsNotASubjectIsRefusedUnasked(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	s := sudoSubject(serverChain())
+	s.Argv = nil
+	if err := wait(t, h.forwarded(h.github).signAsync(h.key(0), sudoMessageV2(t, s, h.github.PublicKey()))); err == nil {
+		t.Error("a v2 sudo with no command was signed")
+	}
+	good := sudoMessageV2(t, sudoSubject(serverChain()), h.github.PublicKey())
+	for name, msg := range map[string][]byte{
+		"trailing bytes": append(bytes.Clone(good), 0),
+		"cut short":      good[:len(good)-1],
+	} {
+		if err := wait(t, h.forwarded(h.github).signAsync(h.key(0), msg)); err == nil {
+			t.Errorf("%s: signed", name)
+		}
+	}
+	h.nothingAsked()
+	if !strings.Contains(h.log.String(), "remote sudo: a quoin-sudo-v2 message with no command") {
+		t.Errorf("the journal lacks the reason:\n%s", h.log.String())
 	}
 }

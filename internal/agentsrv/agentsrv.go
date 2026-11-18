@@ -27,6 +27,7 @@ import (
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/grant"
 	"github.com/danielbodart/quoin/internal/sudomsg"
+	"github.com/danielbodart/quoin/internal/sudoq"
 	"github.com/danielbodart/quoin/peer"
 	"github.com/danielbodart/quoin/policysign"
 	"github.com/danielbodart/quoin/projpolicy"
@@ -191,6 +192,8 @@ type request struct {
 	claimed   []byte
 	fwd       bool
 	sudo      *sudomsg.Message
+	// subject is a v2 sudo's, read from it once.
+	subject *sudoq.Subject
 
 	key       Key
 	keyFP     string
@@ -348,12 +351,19 @@ func (c *conn) classify(key ssh.PublicKey, data []byte) (*request, error) {
 }
 
 // remoteSudo classifies a sign over a remote sudo's message: parsed
-// strictly, on a connection whose last bind is forwarded and to one of the
-// message's host keys.
+// strictly, a v2 one read as a sudoq.Subject, on a connection whose last
+// bind is forwarded and to one of the message's host keys.
 func (c *conn) remoteSudo(req *request, data []byte) (*request, error) {
 	m, err := sudomsg.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("remote sudo: %w", err)
+	}
+	if m.Version == sudomsg.V2 {
+		subject, err := sudoq.FromMessage(m)
+		if err != nil {
+			return nil, fmt.Errorf("remote sudo: %w", err)
+		}
+		req.subject = &subject
 	}
 	if len(c.binds) == 0 {
 		return nil, errors.New("remote sudo on an unbound connection")
@@ -522,8 +532,14 @@ func (c *conn) record(req *request, v verdict) {
 		attrs = append(attrs, "project", l.root, "project_digest", l.digest, "project_applies", l.apply)
 	}
 	if m := req.sudo; m != nil {
-		attrs = append(attrs, "user", m.User, "runas", m.RunAs, "cwd", m.Cwd, "argv", m.Argv,
-			"level", m.Level, "reasons", m.Reasons, "nonce", hex.EncodeToString(m.Nonce))
+		attrs = append(attrs, "version", max(m.Version, sudomsg.V1), "user", m.User, "runas", m.RunAs, "cwd", m.Cwd,
+			"argv", m.Argv, "nonce", hex.EncodeToString(m.Nonce))
+		if sub := req.subject; sub != nil {
+			attrs = append(attrs, "danger", m.Danger, "env", m.Env, "level", req.question.Level,
+				"remote_chain", sub.Chain.Chain, "remote_cut", sub.Chain.Cut, "cmdlines_left_out", m.Truncated)
+		} else {
+			attrs = append(attrs, "level", m.Level, "reasons", m.Reasons)
+		}
 	}
 	if v.err != nil {
 		attrs = append(attrs, "err", v.err.Error())
@@ -595,32 +611,17 @@ func (c *conn) describe(req *request) {
 	req.question = galleyask.Question{Title: title, Text: strings.Join(lines, "\n"), Level: level, Grantable: req.grantable, Chain: galleyask.Chain(r)}
 }
 
+// describeRemoteSudo asks a v2 sudo as its host would ask it locally,
+// its chain the table, with this connection's chain on "from here: "
+// lines; a v1 one as signers asked it before v2.
 func (c *conn) describeRemoteSudo(req *request, keyLine string) {
-	m := req.sudo
 	req.dest = c.hostName(req.host)
-	var lines []string
-	for _, r := range m.Reasons {
-		lines = append(lines, galleyask.Clean(r))
+	o := sudoq.Options{Host: req.dest, Here: c.r, Footer: []string{keyLine}}
+	if req.subject != nil {
+		req.question = sudoq.Question(*req.subject, o)
+		return
 	}
-	if len(lines) > 0 {
-		lines = append(lines, "")
-	}
-	if w := galleyask.Warnings(c.r); len(w) > 0 {
-		lines = append(lines, w...)
-		lines = append(lines, "")
-	}
-	lines = append(lines, galleyask.Command(m.Argv, galleyask.Width)...)
-	lines = append(lines,
-		fmt.Sprintf("%s as %s in %s", galleyask.Clean(m.User), galleyask.Clean(m.RunAs), galleyask.Clean(m.Cwd)),
-		keyLine)
-	level := m.Level
-	if level == "" {
-		level = "normal"
-		if c.r.Cut || c.r.SessionRoot {
-			level = "warning"
-		}
-	}
-	req.question = galleyask.Question{Title: "sudo on " + req.dest, Text: strings.Join(lines, "\n"), Level: level, Allow: "Allow", Chain: galleyask.Chain(c.r)}
+	req.question = sudoq.Legacy(req.sudo, o)
 }
 
 // hostNames are key's names in the known hosts file.

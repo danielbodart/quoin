@@ -245,6 +245,20 @@ refuses unless its forwarded session is bound to one of the message's host
 keys; no grant or window skips it. A stock agent holding a listed key
 signs without asking.
 
+quoin-signer reads two messages. `quoin-sudo-v2` carries what the
+question is made of, the danger lines, the variables and the host's own
+process chain, and is asked as the host would ask that sudo locally, by
+the same builder (`internal/sudoq`): the host's chain is the table, the
+title ends "on <host>", and the chain of the ssh on this machine is shown
+only on lines of its own, each `from here: `, whose warnings raise a
+normal question to a warning. `quoin-sudo-v1`, a level and its reasons,
+is asked as before, with this machine's chain as the table. A v2 message
+that does not read strictly, or names no command, is refused unasked.
+
+**Upgrade order.** A signer older than v2 refuses a v2 message, so the
+machines you ssh *from* take the new quoin-signer before any host's gate
+sends v2.
+
 A sudo with a tty (`ssh -t`) asks the host's own password, as stock. No
 forwarded agent, no `remoteKeys`, or the gate down is stock too: "a
 terminal is required". The agent refusing, failing or holding no listed
@@ -332,6 +346,9 @@ argv, danger reasons, environment lines, the outcome, and its `source`
 `not the pinned galley`, `hung up`, `host rule`, `project rule`). A password appears only as its length.
 A remote sudo's records have `remote` set, the message's fields, the host
 key fingerprints, the nonce, and the key that signed.
+quoin-signer's record of a remote sudo has the message's version and
+fields, and for v2 the host's chain as `remote_chain`, command lines and
+all, beside this machine's `chain`.
 
 ## Environment
 
