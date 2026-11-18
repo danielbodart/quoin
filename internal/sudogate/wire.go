@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/danielbodart/quoin/peer"
 	"golang.org/x/crypto/ssh"
@@ -15,9 +14,6 @@ const (
 	magic       = "QSUD"
 	version     = 2
 	maxRequest  = 1 << 20
-	maxLinks    = 16
-	maxComm     = 64
-	maxCmdline  = 4096
 	maxMessage  = 512
 	maxPassword = 1023
 )
@@ -127,10 +123,10 @@ func (req *request) add(tag byte, rec []byte) error {
 	}
 	switch tag {
 	case 'k':
-		if len(req.links) == maxLinks {
-			return fmt.Errorf("more than %d links", maxLinks)
+		if len(req.links) == peer.MaxLinks {
+			return fmt.Errorf("more than %d links", peer.MaxLinks)
 		}
-		l, err := readLink(rec)
+		l, err := peer.ParseRecord(rec)
 		if err != nil {
 			return err
 		}
@@ -183,45 +179,6 @@ func printable(b []byte) bool {
 		}
 	}
 	return true
-}
-
-func readLink(b []byte) (peer.Link, error) {
-	if len(b) < 26 {
-		return peer.Link{}, errors.New("a link cut short")
-	}
-	be := binary.BigEndian
-	l := peer.Link{
-		Pid: int(be.Uint32(b)), PPid: int(be.Uint32(b[4:])), Start: be.Uint64(b[8:]),
-		UID: int(be.Uint32(b[16:])), TTY: be.Uint32(b[20:]),
-	}
-	b = b[24:]
-	comm, b, ok := cut16(b)
-	if !ok {
-		return peer.Link{}, errors.New("a link's comm cut short")
-	}
-	cmdline, b, ok := cut16(b)
-	if !ok || len(b) != 0 {
-		return peer.Link{}, errors.New("a link's cmdline cut short or followed by more")
-	}
-	if len(comm) > maxComm || len(cmdline) > maxCmdline {
-		return peer.Link{}, fmt.Errorf("a comm of %d bytes or a cmdline of %d", len(comm), len(cmdline))
-	}
-	l.Comm = string(comm)
-	if len(cmdline) > 0 {
-		l.Cmdline = strings.Split(string(cmdline), "\x00")
-	}
-	return l, nil
-}
-
-func cut16(b []byte) (field, rest []byte, ok bool) {
-	if len(b) < 2 {
-		return nil, nil, false
-	}
-	n := int(binary.BigEndian.Uint16(b))
-	if n > len(b)-2 {
-		return nil, nil, false
-	}
-	return b[2 : 2+n], b[2+n:], true
 }
 
 func writeReply(w io.Writer, kind byte, msg []byte) error {
