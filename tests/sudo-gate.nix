@@ -282,7 +282,9 @@ in
         assert len(qs) == 1, qs
         q = qs[0]
         assert q["uid"] == 952 and is_dialog(q) and q["level"] == "normal" and q["title"] == "sudo systemctl restart foo", q
-        assert q["text"] == "/run/current-system/sw/bin/systemctl restart foo", q
+        text = q["text"].split("\n")
+        assert len(text) == 2 and text[0] == "/run/current-system/sw/bin/systemctl restart foo", q
+        assert text[1].startswith("dan as root in /"), q
         assert q["table"]["rows"][0][1] == "claude" and q["table"]["summary"] == "claude", q
         err = machine.succeed("cat /run/claude-a/err")
         assert "quoin-sudo: password remembered for this claude until" in err, err

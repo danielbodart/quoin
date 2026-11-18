@@ -363,6 +363,7 @@ func (a *sudoReq) question(inWindow, wrong bool) galleyask.Question {
 		lines = append(lines, "")
 	}
 	lines = append(lines, a.command...)
+	lines = append(lines, fmt.Sprintf("%s as %s in %s", galleyask.Clean(a.user), galleyask.Clean(a.runas), galleyask.Clean(a.cwd)))
 	if len(a.env) > 0 {
 		lines = append(lines, "", "Run with these variables as well:")
 		for _, e := range a.env {

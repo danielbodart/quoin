@@ -331,7 +331,10 @@ func verified(ok bool) []byte {
 const bin = "/run/current-system/sw/bin/"
 
 func restart(links []peer.Link, unit string) sudoCmd {
-	return sudoCmd{links: links, program: bin + "systemctl", argv: []string{"systemctl", "restart", unit}}
+	return sudoCmd{
+		links: links, program: bin + "systemctl", argv: []string{"systemctl", "restart", unit},
+		info: []string{"runas_user=root", "cwd=/home/dan"},
+	}
 }
 
 func password(pw string, d time.Duration, galley int) answered {
@@ -694,7 +697,7 @@ func TestTheDialogShowsTheResolvedCommandAndTheChainInItsTable(t *testing.T) {
 	c.send(approval(restart(claude(100), "foo")))
 	a := h.next()
 	rows := [][]string{{"100", "claude", ""}, {"101", "bash", "bash -c sudo x"}}
-	if a.q.Title != "sudo systemctl restart foo" || a.q.Text != "/run/current-system/sw/bin/systemctl restart foo" ||
+	if a.q.Title != "sudo systemctl restart foo" || a.q.Text != "/run/current-system/sw/bin/systemctl restart foo\ndan as root in /home/dan" ||
 		!reflect.DeepEqual(a.q.Chain.Rows, rows) || a.q.Chain.Summary != "claude ← sudo x" {
 		t.Errorf("got %q %q %+v", a.q.Title, a.q.Text, a.q.Chain)
 	}
@@ -703,7 +706,7 @@ func TestTheDialogShowsTheResolvedCommandAndTheChainInItsTable(t *testing.T) {
 	c = h.sudo(501)
 	c.send(approval(restart(claude(100), "sshd.service")))
 	a = h.next()
-	want := "touches a unit that guards this machine\n\n/run/current-system/sw/bin/systemctl restart sshd.service"
+	want := "touches a unit that guards this machine\n\n/run/current-system/sw/bin/systemctl restart sshd.service\ndan as root in /home/dan"
 	if a.q.Text != want {
 		t.Errorf("got %q", a.q.Text)
 	}
