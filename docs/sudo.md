@@ -253,7 +253,8 @@ one forwarded channel, not two. This is who serves the agent, not what the
 chain looks like, so a sudo reparented away from its login (`setsid`,
 tmux) or run under mosey, whose spawner is no `sshd-session`, is remote
 all the same. The connect never waits: a listener with a full backlog is
-no agent.
+no agent. A Mac asks the same question with its own calls
+([macOS](#macos)).
 
 The gate classifies the command as for a local sudo and hands the plugin a
 message to sign, `quoin-sudo-v2`: a nonce, the host's keys, the user, the
@@ -282,8 +283,10 @@ is asked as before, with this machine's chain as the table. A v2 message
 that does not read strictly, or names no command, is refused unasked.
 
 **Upgrade order.** A signer older than v2 refuses a v2 message, so the
-machines you ssh *from* take the new quoin-signer before any host's gate
-sends v2.
+machines you ssh *from* (the laptops, with quoin-signer) take the new
+quoin before any host does: a Linux host's gate and a Mac's plugin both
+send v2 as soon as they are updated. A new signer still reads v1, so
+hosts can follow at their own pace.
 
 A sudo with a tty (`ssh -t`) asks the host's own password, as stock. No
 forwarded agent, no `remoteKeys`, or the gate down is stock too: "a
@@ -316,21 +319,31 @@ no local mode and no gate daemon: remote mode reads no rules, and the
 plugin (`sudo/quoin_sudo_darwin.zig`) does the gate's remote half in sudo's
 own process. It is the Linux plugin and gate, step for step:
 
-- **open** arms on the gated user, not `-l` or `-v`, no tty, a chain
-  with the user's `sshd-session` under root's (read with `sysctl` where
-  Linux reads `/proc`), `remote`, an absolute `SSH_AUTH_SOCK`, and listed
-  keys that parse. Any miss is stock sudo. It does not yet ask who serves
-  the agent, as Linux does: a reparented sudo or one under mosey is stock
-  on a Mac.
+- **open** arms on the gated user, not `-l` or `-v`, no tty, `remote`,
+  an absolute `SSH_AUTH_SOCK` served by a forwarder, and listed keys that
+  parse. Any miss is stock sudo. Who serves the agent is asked as on
+  Linux, with the Mac's calls: the plugin connects as the invoking user,
+  takes the listener's uid from `LOCAL_PEERCRED` and its pid from
+  `LOCAL_PEERPID`, and reads its program as root with `proc_pidpath`; a
+  forwarder is the user's own `sshd-session`, `sshd` or mosey, wherever
+  it lives. So a sudo under mosey, or reparented away from its login, is
+  remote on a Mac too. The connection is kept for the signature, and the
+  connect never waits. A drop to the user or a restore that fails
+  refuses the sudo.
 - **PAM**: `quoin_sudo_pam.so`, `sufficient`, first in `sudo_local` (macOS
   has no `pam_exec`). The Linux helper's tests, then, where it asks the
   gate whether its sudo checked in, it asks the plugin in the same sudo
   whether it armed. A plugin that is not loaded or not armed is the
   password.
-- **accept** builds `quoin-sudo-v1` from sudoers' `command_info`, byte for
-  byte as `internal/sudomsg` (`sudo/sudomsg.zig`, held to the Go golden),
-  has the forwarded agent sign it as the invoking user, and verifies the
-  signature itself. A refusal and every failure -- no agent, a hang-up,
+- **accept** builds `quoin-sudo-v2` from sudoers' `command_info` and the
+  chain above sudo, byte for byte as `internal/sudomsg`
+  (`sudo/sudomsg.zig`, held to the Go golden), cut to fit as the gate cuts
+  it, has the forwarded agent sign it on open's connection, and verifies
+  the signature itself. The chain is read with `sysctl` where Linux reads
+  `/proc`: each link's `kinfo_proc` twice, its start time the check that
+  the pid was not reused, and its argv with `KERN_PROCARGS2` between the
+  two reads, so the client's table shows the Mac's command lines as a
+  Linux host's. A refusal and every failure -- no agent, a hang-up,
   garbage, no listed key, a bad signature -- refuse the sudo, as the gate
   does; none falls back to the password. Nothing waits on a timer.
 
@@ -339,7 +352,9 @@ line of any other type fails the file, and remote mode is off. The module
 adds `Defaults noninteractive_auth` and `Defaults timestamp_type=tty`, as
 on Linux, so `sudo -n` reaches the gate and a no-tty sudo leaves no ticket;
 it refuses another `timestamp_type`. The danger catalogue is not ported
-yet: a Mac's message has no level and no reasons.
+yet: a Mac's message has no danger lines and no variable lines, so its
+question is never a danger, and a warning only when its chain is cut
+short.
 
 `sudo.conf` names the plugin from the store with `keys=` the listed keys'
 file. A `Plugin` line sudo cannot load makes every sudo fatal, so the
@@ -357,7 +372,9 @@ first, before `/etc` changes, and a failure fails the switch:
 
 Decision records go to `/var/log/quoin-sudo.log`, one line each, with the
 gate's fields: the nonce, the host key fingerprints, user, runas, cwd,
-argv, the key that signed, `outcome` and `source`. Not the unified log:
+argv, the chain's comm names as `chain`, `cmdlines_left_out=true` when
+command lines were cut to fit, the key that signed, `outcome` and
+`source`. Not the unified log:
 `os_log` and `syslog` read their format string from the plugin's dylib,
 which logd's sandbox may not, and every record reads `<compose failure>`.
 
@@ -375,11 +392,18 @@ One `decision` record per answer: the chain, the anchor, the program and
 argv, danger reasons, environment lines, the outcome, and its `source`
 (`galley`, `window`, `verified`, `wrong password`, `cancelled`, `nobody`,
 `not the pinned galley`, `hung up`, `host rule`, `project rule`). A password appears only as its length.
-A remote sudo's records have `remote` set, the message's fields, the host
-key fingerprints, the nonce, and the key that signed.
-quoin-signer's record of a remote sudo has the message's version and
-fields, and for v2 the host's chain as `remote_chain`, command lines and
-all, beside this machine's `chain`.
+A remote sudo's records have `remote` set, the message's fields (`user`,
+`runas`, `cwd`, `argv`, `danger`, `env`), its `version`, the `level` the
+gate gave it, `cmdlines_left_out` when the chain's command lines were cut
+to fit, `truncated` when the plugin's request to the gate was, the host
+key fingerprints as `host_keys`, the `nonce`, and the `key` that signed.
+
+quoin-signer's record of a remote sudo (`journalctl -u quoin-signer`,
+[signer.md](signer.md)) has the message's `version`, `user`, `runas`, `cwd`,
+`argv` and `nonce`. For v2 it adds `danger`, `env`, the `level` it asked
+at, the host's chain as `remote_chain`, command lines and all, beside this
+machine's `chain`, `remote_cut` when the host's chain was cut short, and
+`cmdlines_left_out`; for v1, the message's `level` and `reasons`.
 
 ## Environment
 
