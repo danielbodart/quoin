@@ -28,6 +28,7 @@ func hostKey(t testing.TB, seed byte) []byte {
 
 func example(t testing.TB) *Message {
 	return &Message{
+		Version:  V1,
 		Nonce:    bytes.Repeat([]byte{0xab}, NonceSize),
 		HostKeys: [][]byte{hostKey(t, 1), hostKey(t, 2)},
 		User:     "dan",
@@ -113,7 +114,8 @@ func TestAMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 		"an unknown level":  enc(func(m *Message) { m.Level = "normal" }),
 		"a missing field":   good[:len(good)-4],
 		"trailing bytes":    append(bytes.Clone(good), 0),
-		"another magic":     append([]byte("\x00\x00\x00\x0dquoin-sudo-v2"), good[17:]...),
+		"v2's magic":        append([]byte("\x00\x00\x00\x0dquoin-sudo-v2"), good[17:]...),
+		"another magic":     append([]byte("\x00\x00\x00\x0dquoin-sudo-v3"), good[17:]...),
 		"a count past data": countPast(good),
 		"empty":             nil,
 	} {
@@ -155,8 +157,13 @@ func TestOnlyTheLengthPrefixedMagicHasIt(t *testing.T) {
 			t.Errorf("%q has the magic", b)
 		}
 	}
-	if !HasMagic([]byte("\x00\x00\x00\x0dquoin-sudo-v1")) {
-		t.Error("the magic alone has no magic")
+	for _, b := range []string{"\x00\x00\x00\x0dquoin-sudo-v1", "\x00\x00\x00\x0dquoin-sudo-v2"} {
+		if !HasMagic([]byte(b)) {
+			t.Errorf("the magic %q alone has no magic", b)
+		}
+	}
+	if HasMagic([]byte("\x00\x00\x00\x0dquoin-sudo-v3")) {
+		t.Error("v3 has the magic")
 	}
 }
 
@@ -166,6 +173,12 @@ func FuzzNoRemoteSudoMessageCrashesTheParser(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(good)
+	v2, err := exampleV2(f).Marshal()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(v2)
+	f.Add([]byte(prefixV2))
 	f.Add([]byte(prefix))
 	f.Add(binary.BigEndian.AppendUint32([]byte(prefix), NonceSize))
 	f.Add(append([]byte(prefix), 0xff, 0xff, 0xff, 0xff))

@@ -170,6 +170,7 @@ func TestTheMessageNamesEveryHostKeyAndTheResolvedCommand(t *testing.T) {
 	c.send(approval(cmd))
 	r := c.readMessage()
 	want := &sudomsg.Message{
+		Version:  sudomsg.V1,
 		Nonce:    r.msg.Nonce,
 		HostKeys: [][]byte{hosts[0].Marshal(), hosts[1].Marshal()},
 		User:     "dan", RunAs: "root", Cwd: "/home/dan/src",
