@@ -52,6 +52,30 @@ let
     systemd.user.services.galley.startLimitIntervalSec = 0;
   };
 
+  # agentpeer SOCKET HOLD: connects to SOCKET as whoever runs it and prints,
+  # as JSON, the socket's path, its listener's pid and uid as SO_PEERCRED
+  # gives them, and its own ancestors' pids; then holds the connection until
+  # a line is written to the FIFO HOLD, so the listener is still there while
+  # root looks at it.
+  agentpeer = pkgs.writeScript "agentpeer" ''
+    #!${pkgs.python3}/bin/python3
+    import json, os, socket, struct, sys
+
+    path, hold = sys.argv[1], sys.argv[2]
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(path)
+    cred = s.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    pid, uid, gid = struct.unpack("3i", cred)
+    ancestors, p = [], os.getppid()
+    while p > 1:
+        ancestors.append(p)
+        with open(f"/proc/{p}/stat") as f:
+            p = int(f.read().rsplit(")", 1)[1].split()[1])
+    print(json.dumps({"sock": path, "pid": pid, "uid": uid, "ancestors": ancestors}), flush=True)
+    with open(hold) as f:
+        f.readline()
+  '';
+
   sleeper = { wantedBy = [ "multi-user.target" ]; serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity"; };
 in
 {
@@ -100,6 +124,7 @@ in
 
   testScript = ''
     import json
+    import re
     import shlex
 
     pw = "${password}"
@@ -192,6 +217,28 @@ in
             rc, out = run(f"ssh {host} true")
             assert rc == 0, repr((rc, out))
         galley(client, "answer 0")
+
+    # What quoin-sudo tells an ssh -A login by: the forwarded agent's socket
+    # is served by the login's own sshd-session, running as dan, an ancestor
+    # of the login's shell. OpenSSH 10.1 and on bind it in ~/.ssh/agent/,
+    # named for that sshd-session's pid. Its exe, unlike sshd's, is not
+    # dumpable, so only root reads it.
+    with subtest("Forwarded agent: SSH_AUTH_SOCK under ssh -A is served by dan's sshd-session"):
+        server.succeed("install -d -o dan -g users -m 0700 /run/peer && mkfifo -m 0600 /run/peer/hold && chown dan /run/peer/hold")
+        h = launch("ssh -A server '${agentpeer} \"$SSH_AUTH_SOCK\" /run/peer/hold'")
+        peer = json.loads(await_lines(client, 1, '"pid"', "tail", "-n", "+1", "-F", h[1]))
+        pid = peer["pid"]
+        exe = server.succeed(f"readlink /proc/{pid}/exe").strip()
+        comm = server.succeed(f"cat /proc/{pid}/comm").strip()
+        server.fail(f"runuser -u dan -- readlink /proc/{pid}/exe")
+        server.log(f"agent listener: {peer} exe={exe} comm={comm} {server.succeed('ssh -V 2>&1').strip()}")
+        assert exe.endswith("/libexec/sshd-session") and comm == "sshd-session", (exe, comm)
+        assert peer["uid"] == 1000 and pid in peer["ancestors"], peer
+        assert re.fullmatch(rf"/home/dan/\.ssh/agent/s\.[^/]+\.sshd\.{pid}\.[^/]+", peer["sock"]), peer
+        server.succeed("echo done > /run/peer/hold")
+        rc, out = wait(h)
+        assert rc == 0, repr((rc, out))
+        server.succeed("rm -r /run/peer")
 
     with subtest("Allow: the command runs, asked once on the client and never on the server"):
         asked, gated = len(events(client, "question")), len(gate())
