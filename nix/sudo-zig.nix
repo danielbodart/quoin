@@ -79,9 +79,9 @@ in
   check = zigBuild {
     pname = "quoin-sudo-zig-check";
     files = sources ++ map (f: root + "/${f}") [ "plugin_test.zig" "misread_test.zig" "remote_test.zig" "planted_type.zig" "lint.zig" "analyze" ".zwanzig.json" ]
-      # wire.zig's tests embed the wire's golden bytes, which the gate's Go
-      # tests read too.
-      ++ [ (root + "/testdata/wire") ];
+      # wire.zig's and sudomsg.zig's tests embed the wire's and the
+      # message's golden bytes, which the Go tests read too.
+      ++ [ (root + "/sudomsg.zig") (root + "/testdata/wire") (root + "/testdata/sudomsg") ];
     steps = "test lint fmt analyze";
     flags = "-Ddev=true -Doracle=${oracle}/bin/oracle";
     deps = true;

@@ -39,6 +39,10 @@ pub fn build(b: *std.Build) void {
             const t = b.addTest(.{ .name = name, .root_module = m.get(name) });
             test_step.dependOn(&b.addRunArtifact(t).step);
         }
+        // The darwin plugin's message, whose goldens are Go's: tested here
+        // too, where the Go side and the VM tests are.
+        const sudomsg = b.createModule(.{ .root_source_file = b.path("sudomsg.zig"), .target = target, .optimize = optimize });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "sudomsg", .root_module = sudomsg })).step);
         const pam_cfg = config(b, "quoin-sudo-test-pam.sock", uid, .stock, "test");
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "pam", .root_module = pamHelper(b, target, optimize, pam_cfg, false).root_module })).step);
 
