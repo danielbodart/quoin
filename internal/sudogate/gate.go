@@ -23,6 +23,7 @@ import (
 	"github.com/danielbodart/quoin/execrule"
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/grant"
+	"github.com/danielbodart/quoin/internal/sudoq"
 	"github.com/danielbodart/quoin/peer"
 	"github.com/danielbodart/quoin/sudo"
 	"golang.org/x/crypto/ssh"
@@ -256,8 +257,6 @@ type sudoReq struct {
 	cwd       string
 	program   string
 	argv      []string
-	title     string
-	command   []string
 	danger    []string
 	env       []string
 	truncated bool
@@ -290,13 +289,6 @@ func (g *Gate) describe(req *request) (*sudoReq, error) {
 	if len(req.argv) > 1 {
 		words = append(words, req.argv[1:]...)
 	}
-	shown := make([]string, len(words))
-	for i, w := range words {
-		shown[i] = galleyask.Clean(w)
-	}
-	a.title = "sudo " + strings.Join(shown, " ")
-	a.command = galleyask.Command(append([]string{program}, words[1:]...), galleyask.Width)
-
 	if !rootOwned(program, g.User) {
 		a.danger = append(a.danger, outsideLine(program))
 	}
@@ -334,55 +326,35 @@ func pairs(entries []string) map[string]string {
 	return m
 }
 
-func (a *sudoReq) level() string {
-	switch {
-	case len(a.danger) > 0:
-		return "danger"
-	case a.r.Cut || a.r.SessionRoot:
-		return "warning"
+// subject is a as sudoq asks it: the program by the path sudo resolved.
+func (a *sudoReq) subject() sudoq.Subject {
+	argv := []string{a.program}
+	if len(a.argv) > 1 {
+		argv = append(argv, a.argv[1:]...)
 	}
-	return "normal"
+	return sudoq.Subject{
+		Argv: argv, User: a.user, RunAs: a.runas, Cwd: a.cwd,
+		Danger: a.danger, Env: a.env, Chain: a.r,
+	}
+}
+
+func (a *sudoReq) level() string {
+	return sudoq.Level(a.subject())
 }
 
 func (a *sudoReq) question(inWindow, wrong bool) galleyask.Question {
-	level := a.level()
-	var lines []string
+	var lead []string
 	if a.rule != nil {
 		inWindow = true
-		lines = append(lines, a.rule.line(), "")
+		lead = append(lead, a.rule.line(), "")
 	}
 	if wrong && !inWindow {
-		lines = append(lines, "Wrong password, try again", "")
+		lead = append(lead, "Wrong password, try again", "")
 	}
-	if len(a.danger) > 0 {
-		lines = append(lines, a.danger...)
-		lines = append(lines, "")
-	}
-	if w := galleyask.Warnings(a.r); len(w) > 0 {
-		lines = append(lines, w...)
-		lines = append(lines, "")
-	}
-	lines = append(lines, a.command...)
-	lines = append(lines, fmt.Sprintf("%s as %s in %s", galleyask.Clean(a.user), galleyask.Clean(a.runas), galleyask.Clean(a.cwd)))
-	if len(a.env) > 0 {
-		lines = append(lines, "", "Run with these variables as well:")
-		for _, e := range a.env {
-			lines = append(lines, "    "+shortVar(e))
-		}
-	}
-	return galleyask.Question{
-		Title: a.title, Text: strings.Join(lines, "\n"), Level: level,
-		Password: !inWindow, Grantable: !inWindow && a.grantable(), Allow: "Allow", Chain: galleyask.Chain(a.r),
-	}
-}
-
-// shortVar is a variable's line cut to galleyask.Width characters: enough
-// to see what it is and that it is there, more of it in the log.
-func shortVar(e string) string {
-	if r := []rune(e); len(r) > galleyask.Width {
-		return string(r[:galleyask.Width-1]) + "…"
-	}
-	return e
+	q := sudoq.Question(a.subject(), sudoq.Options{Lead: lead})
+	q.Password = !inWindow
+	q.Grantable = !inWindow && a.grantable()
+	return q
 }
 
 // window is the galley process a's claude's window is pinned to, or nil
