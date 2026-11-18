@@ -84,6 +84,39 @@ let
     cp ${pkgs.socat}/bin/socat $out/bin/mosey
   '';
 
+  # relayed PROGRAM CMD: relays $SSH_AUTH_SOCK through PROGRAM, a socat,
+  # started as mosey starts its spawner -- through a path named exe, so its
+  # comm is "exe", in a session of its own -- and runs CMD with
+  # SSH_AUTH_SOCK at the relay. It says the relay's comm first.
+  relayed = pkgs.writeShellScript "relayed" ''
+    set -u
+    d=$(mktemp -d)
+    ln -s "$1" "$d/exe"
+    setsid -f "$d/exe" -d -d UNIX-LISTEN:"$d/agent.sock",fork,perm=0600 UNIX-CONNECT:"$SSH_AUTH_SOCK" </dev/null >/dev/null 2>"$d/log"
+    ${vmlib.await} 1 "listening on" -- tail -n +1 -F "$d/log" >/dev/null
+    echo "relay comm: $(cat /proc/"$(pgrep -o -f "^$d/exe ")"/comm)"
+    SSH_AUTH_SOCK="$d/agent.sock" sh -c "$2"
+    s=$?
+    pkill -f "^$d/exe "
+    rm -r "$d"
+    exit $s
+  '';
+
+  # detached CMD: runs CMD in a session of its own, reparented away from
+  # the login (setsid -f's parent exits at once), waits for it on a FIFO,
+  # and prints its output and exits with its status, so the login, and its
+  # forwarded agent, stay up until it is done.
+  detached = pkgs.writeShellScript "detached" ''
+    set -u
+    d=$(mktemp -d)
+    mkfifo "$d/done"
+    setsid -f sh -c "$1"' >"$0/out" 2>&1; echo $? >"$0/done"' "$d" </dev/null >/dev/null 2>&1
+    s=$(cat "$d/done")
+    cat "$d/out"
+    rm -r "$d"
+    exit "$s"
+  '';
+
   sleeper = { wantedBy = [ "multi-user.target" ]; serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity"; };
 in
 {
@@ -318,6 +351,63 @@ in
         shown = [l for l in argv if l.startswith("/run/current-system/sw/bin/bash")]
         assert shown == ["/run/current-system/sw/bin/bash -c whoami"], argv
         server.succeed("journalctl -t sudo --no-pager | tail -n 3 | grep -F 'COMMAND=/run/current-system/sw/bin/bash -c whoami'")
+
+    # Who serves SSH_AUTH_SOCK, not the chain, makes a sudo remote: one
+    # setsid'd away from its login has no sshd-session above it, and was
+    # gated locally, asking server's own galley.
+    with subtest("Reparented: a sudo setsid'd away from its login is remote, its own chain the table"):
+        asked, local = len(events(client, "question")), len(events(server, "question"))
+        rc, out = remote_sudo("${detached} 'sudo id -u'")
+        assert rc == 0 and out.strip().splitlines()[-1] == "0", repr((rc, out))
+        qs = events(client, "question")[asked:]
+        assert len(qs) == 1 and qs[0]["title"] == "sudo id -u on server", qs
+        rows = qs[0]["table"]["rows"]
+        client.log(f"reparented chain: {rows}")
+        assert [r[1] for r in rows] == ["systemd", "sh"] and qs[0]["table"]["summary"].startswith("server: "), qs[0]
+        assert len(events(server, "question")) == local
+
+    # mosey's spawner serves the agent of a mosey session; its comm is
+    # "exe", and it is in a session of its own, so no sshd-session is in the
+    # sudo's chain. The relay here stands in for it.
+    with subtest("mosey: a sudo whose agent a mosey-shaped relay serves is remote, and allowed"):
+        asked, local = len(events(client, "question")), len(events(server, "question"))
+        cmd = shlex.quote("${detached} 'sudo id -u'")
+        rc, out = remote_sudo(f"${relayed} ${moseyRelay}/bin/mosey {cmd}")
+        assert rc == 0 and out.strip().splitlines()[-1] == "0", repr((rc, out))
+        assert "relay comm: exe" in out.splitlines(), out
+        qs = events(client, "question")[asked:]
+        assert len(qs) == 1 and qs[0]["title"] == "sudo id -u on server", qs
+        assert len(events(server, "question")) == local
+
+    # In an ssh login, an agent that is not forwarded is stock, as no agent
+    # is: never this host's own galley for a user who is not at it.
+    with subtest("Not forwarded: a login's own ssh-agent, another program's relay, another user's listener, a stale socket are stock"):
+        server.succeed("install -d -m 0755 /run/rootagent && ln -s ${moseyRelay}/bin/mosey /run/rootagent/exe")
+        server.succeed("setsid -f /run/rootagent/exe -d -d UNIX-LISTEN:/run/rootagent/agent.sock,fork,perm=0666 SYSTEM:cat "
+                       "</dev/null >/dev/null 2>/run/rootagent/log")
+        await_lines(server, 1, "listening on", "tail", "-n", "+1", "-F", "/run/rootagent/log")
+        for cmd in [
+            'eval "$(ssh-agent -s)" >/dev/null; sudo id -u; s=$?; ssh-agent -k >/dev/null; exit $s',
+            "${relayed} ${pkgs.socat}/bin/socat 'sudo id -u'",
+            "SSH_AUTH_SOCK=/run/rootagent/agent.sock sudo id -u",
+            "SSH_AUTH_SOCK=/run/no-such-agent.sock sudo id -u",
+        ]:
+            signed, gated = len(signs()), len(checkins())
+            rc, out = remote_sudo(cmd)
+            assert rc != 0 and "a terminal is required" in out, repr((cmd, rc, out))
+            assert len(checkins()) == gated, cmd
+            assert all(d["class"] != "remote sudo" for d in signs()[signed:]), cmd
+        server.succeed("pkill -f '^/run/rootagent/exe ' && rm -r /run/rootagent")
+
+    # A process whose argv is mosey's spawner's, mosey --serve=spawner,
+    # stands in for a mosey session with no agent forwarded into it.
+    with subtest("mosey with no agent: a sudo in a mosey session is stock, not asked on server"):
+        signed, gated, local = len(signs()), len(checkins()), len(events(server, "question"))
+        spawner = shlex.quote("exec -a /run/no-such/mosey bash -c 'sudo id -u; s=$?; exit $s' --serve=spawner")
+        rc, out = remote_sudo(f"${detached} {shlex.quote('bash -c ' + spawner)}", ssh="ssh -a")
+        assert rc != 0 and "a terminal is required" in out, repr((rc, out))
+        assert len(checkins()) == gated and len(events(server, "question")) == local
+        assert all(d["class"] != "remote sudo" for d in signs()[signed:])
 
     with subtest("Relayed socket: a socket from second is refused by the signer, and sudo refuses"):
         # socat says "listening on" once it is bound. The relay on server
