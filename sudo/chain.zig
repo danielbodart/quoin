@@ -111,8 +111,10 @@ const Stat = struct { comm: []const u8, ppid: u32, tty: u32, start: u64 };
 const read = if (darwin) readSysctl else readProc;
 
 /// macOS: the process's kinfo_proc, read twice, its start time the check
-/// that the pid was not reused between the reads. The real uid, as Linux
-/// takes status's first Uid; no cmdline, which only the Linux gate shows.
+/// that the pid was not reused between the reads, and its arguments,
+/// KERN_PROCARGS2, read between them. The real uid, as Linux takes
+/// status's first Uid. Arguments that cannot be read, as a zombie's, leave
+/// the command line empty, not the link out.
 fn readSysctl(pid: u32, l: *Link) bool {
     const c = @import("abi").c;
     var kp: c.struct_kinfo_proc = undefined;
@@ -126,11 +128,54 @@ fn readSysctl(pid: u32, l: *Link) bool {
     l.start = @as(u64, @intCast(t.tv_sec)) * 1_000_000 + @as(u64, @intCast(t.tv_usec));
     l.comm_len = @intCast(@min(comm.len, l.comm_buf.len));
     @memcpy(l.comm_buf[0..l.comm_len], comm[0..l.comm_len]);
-    l.cmdline_len = 0;
+    l.cmdline_len = @intCast(procArgs(c, pid, &l.cmdline_buf).len);
     var again: c.struct_kinfo_proc = undefined;
     if (!kinfo(c, pid, &again)) return false;
     const t2 = again.kp_proc.p_un.__p_starttime;
     return t2.tv_sec == t.tv_sec and t2.tv_usec == t.tv_usec;
+}
+
+/// KERN_PROCARGS2 holds argv and the environment, which together ARG_MAX
+/// bounds, after the exec path; ps sizes its buffer by KERN_ARGMAX too.
+var procargs_buf: [(1 << 20) + (64 << 10)]u8 = undefined;
+
+/// `pid`'s argv, as parseProcArgs joins it into `out`; empty when the
+/// sysctl fails.
+fn procArgs(comptime c: type, pid: u32, out: *[max_cmdline]u8) []const u8 {
+    var mib = [3]c_int{ c.CTL_KERN, c.KERN_PROCARGS2, @intCast(pid) };
+    var len: usize = procargs_buf.len;
+    if (c.sysctl(&mib, mib.len, &procargs_buf, &len, null, 0) != 0) return out[0..0];
+    return parseProcArgs(procargs_buf[0..@min(len, procargs_buf.len)], out);
+}
+
+/// KERN_PROCARGS2's argv as /proc/<pid>/cmdline reads on Linux: NUL-joined
+/// with no NUL after the last argument, cut at `out`'s size. The buffer is
+/// a native int argc, the exec path NUL-terminated, NUL padding, then argc
+/// NUL-terminated arguments and the environment, which is not read. A
+/// buffer that ends early gives the arguments it holds, a last one cut
+/// short included; one too short for argc gives none.
+pub fn parseProcArgs(buf: []const u8, out: *[max_cmdline]u8) []const u8 {
+    if (buf.len < @sizeOf(c_int)) return out[0..0];
+    const argc = std.mem.readInt(c_int, buf[0..@sizeOf(c_int)], builtin.cpu.arch.endian());
+    if (argc <= 0) return out[0..0];
+    var at: usize = @sizeOf(c_int);
+    at = std.mem.indexOfScalarPos(u8, buf, at, 0) orelse return out[0..0];
+    while (at < buf.len and buf[at] == 0) at += 1;
+    var n: usize = 0;
+    var left: usize = @intCast(argc);
+    while (left > 0 and at < buf.len) : (left -= 1) {
+        const end = std.mem.indexOfScalarPos(u8, buf, at, 0) orelse buf.len;
+        if (n > 0) {
+            if (n == out.len) break;
+            out[n] = 0;
+            n += 1;
+        }
+        const take = @min(end - at, out.len - n);
+        @memcpy(out[n..][0..take], buf[at..][0..take]);
+        n += take;
+        at = end + 1;
+    }
+    return out[0..n];
 }
 
 fn kinfo(comptime c: type, pid: u32, kp: *c.struct_kinfo_proc) bool {
@@ -294,6 +339,65 @@ test "sshd-session, sshd and mosey wherever they live, a user's own included, ar
         "",
         "/",
     }) |p| try testing.expect(!isForwarder(p));
+}
+
+/// A KERN_PROCARGS2 buffer: argc, the exec path, `pad` NULs, the
+/// arguments each NUL-terminated, and an environment.
+fn procargs(out: []u8, argc: c_int, exec_path: []const u8, pad: usize, argv: []const []const u8) []u8 {
+    std.mem.writeInt(c_int, out[0..@sizeOf(c_int)], argc, builtin.cpu.arch.endian());
+    var at: usize = @sizeOf(c_int);
+    @memcpy(out[at..][0..exec_path.len], exec_path);
+    at += exec_path.len;
+    @memset(out[at..][0 .. pad + 1], 0);
+    at += pad + 1;
+    for (argv) |a| {
+        @memcpy(out[at..][0..a.len], a);
+        out[at + a.len] = 0;
+        at += a.len + 1;
+    }
+    const env = "PATH=/usr/bin\x00HOME=/Users/dan\x00";
+    @memcpy(out[at..][0..env.len], env);
+    return out[0 .. at + env.len];
+}
+
+test "KERN_PROCARGS2's argv is NUL-joined as Linux's cmdline, past the exec path and its padding, without the environment" {
+    var b: [512]u8 = undefined;
+    var out: [max_cmdline]u8 = undefined;
+    const full = procargs(&b, 3, "/usr/bin/sudo", 6, &.{ "sudo", "id", "-u" });
+    try testing.expectEqualStrings("sudo\x00id\x00-u", parseProcArgs(full, &out));
+    try testing.expectEqualStrings("sudo\x00id\x00-u", parseProcArgs(procargs(&b, 3, "/usr/bin/sudo", 0, &.{ "sudo", "id", "-u" }), &out));
+    try testing.expectEqualStrings("bash", parseProcArgs(procargs(&b, 1, "/bin/bash", 3, &.{"bash"}), &out));
+    try testing.expectEqualStrings("a\x00\x00c", parseProcArgs(procargs(&b, 3, "/x", 1, &.{ "a", "", "c" }), &out));
+}
+
+test "a KERN_PROCARGS2 buffer with no arguments, a bad argc, or cut short gives what it holds and no more" {
+    var b: [512]u8 = undefined;
+    var out: [max_cmdline]u8 = undefined;
+    try testing.expectEqualStrings("", parseProcArgs(procargs(&b, 0, "/x", 2, &.{}), &out));
+    try testing.expectEqualStrings("", parseProcArgs(procargs(&b, -1, "/x", 2, &.{"a"}), &out));
+    try testing.expectEqualStrings("", parseProcArgs("", &out));
+    try testing.expectEqualStrings("", parseProcArgs(b[0..2], &out));
+    const full = procargs(&b, 3, "/usr/bin/sudo", 6, &.{ "sudo", "id", "-u" });
+    const sudo_at = @sizeOf(c_int) + "/usr/bin/sudo".len + 7;
+    try testing.expectEqualStrings("", parseProcArgs(full[0 .. @sizeOf(c_int) + 4], &out));
+    try testing.expectEqualStrings("", parseProcArgs(full[0..sudo_at], &out));
+    try testing.expectEqualStrings("su", parseProcArgs(full[0 .. sudo_at + 2], &out));
+    try testing.expectEqualStrings("sudo\x00i", parseProcArgs(full[0 .. sudo_at + 6], &out));
+    try testing.expectEqualStrings("sudo", parseProcArgs(procargs(&b, 1, "/usr/bin/sudo", 6, &.{ "sudo", "id" }), &out));
+}
+
+test "a KERN_PROCARGS2 command line is cut at max_cmdline" {
+    const b = try testing.allocator.alloc(u8, 3 * max_cmdline);
+    defer testing.allocator.free(b);
+    var out: [max_cmdline]u8 = undefined;
+    const long = "a" ** (max_cmdline - 2);
+    const got = parseProcArgs(procargs(b, 3, "/x", 1, &.{ "sh", long, "tail" }), &out);
+    try testing.expectEqual(@as(usize, max_cmdline), got.len);
+    try testing.expectEqualStrings("sh\x00" ++ long[0 .. max_cmdline - 3], got);
+    const exact = parseProcArgs(procargs(b, 2, "/x", 1, &.{ "sh", "a" ** (max_cmdline - 3) }), &out);
+    try testing.expectEqual(@as(usize, max_cmdline), exact.len);
+    const one_more = parseProcArgs(procargs(b, 3, "/x", 1, &.{ "sh", "a" ** (max_cmdline - 3), "b" }), &out);
+    try testing.expectEqualStrings(exact, one_more);
 }
 
 test "exePath is the program a process runs, and null for no such process" {
