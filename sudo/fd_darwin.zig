@@ -1,6 +1,7 @@
 //! fd.zig for macOS: the forwarded agent's connection, as the same
-//! generation-checked handles, over libc. No SO_PEERCRED and no gate: the
-//! darwin plugin connects only to the agent, and reads files through std.
+//! generation-checked handles, over libc. No gate: the darwin plugin
+//! connects only to the agent, and reads files through std. The listener's
+//! uid is LOCAL_PEERCRED's, its pid LOCAL_PEERPID's, as Linux's SO_PEERCRED.
 
 const std = @import("std");
 const c = std.c;
@@ -86,6 +87,18 @@ pub const Sock = struct {
         return done;
     }
 
+    /// LOCAL_PEERCRED: the listener's effective uid, as the kernel
+    /// recorded it at connect, as Linux's SO_PEERCRED uid.
+    pub fn peerUid(self: Sock) Error!u32 {
+        const sol_local = 0;
+        const local_peercred = 1;
+        var cred: Xucred = undefined;
+        var len: c.socklen_t = @sizeOf(Xucred);
+        if (c.getsockopt(self.raw(), sol_local, local_peercred, @ptrCast(&cred), &len) != 0) return error.Sys;
+        if (len != @sizeOf(Xucred) or cred.version != xucred_version) return error.Sys;
+        return cred.uid;
+    }
+
     /// LOCAL_PEERPID: the process that listened on the socket, as the
     /// kernel recorded it at connect, as Linux's SO_PEERCRED pid.
     pub fn peerPid(self: Sock) Error!u32 {
@@ -98,9 +111,20 @@ pub const Sock = struct {
     }
 };
 
+/// <sys/ucred.h>'s struct xucred, XUCRED_VERSION 0.
+const Xucred = extern struct {
+    version: c_uint,
+    uid: c.uid_t,
+    ngroups: c_short,
+    groups: [16]c.gid_t,
+};
+const xucred_version = 0;
+
 /// Connects to the unix socket at `path`, close-on-exec and SO_NOSIGPIPE.
-/// Nothing on it is bounded in time: an agent that is not there refuses the
-/// connect, and one that goes ends a send or read with an error or EOF.
+/// Nothing on it is bounded in time, and the connect never waits: an agent
+/// that is not there refuses it, as does one whose backlog is full, so a
+/// listener that never accepts cannot hold sudo at open. One that goes
+/// ends a send or read with an error or EOF.
 pub fn connectUnix(path: []const u8) Error!Sock {
     var addr: c.sockaddr.un = .{ .path = @splat(0) };
     if (path.len >= addr.path.len) return error.Sys;
@@ -113,9 +137,11 @@ pub fn connectUnix(path: []const u8) Error!Sock {
     if (c.fcntl(s.raw, c.F.SETFD, @as(c_int, c.FD_CLOEXEC)) != 0) return error.Sys;
     const on: c_int = 1;
     if (c.setsockopt(s.raw, c.SOL.SOCKET, c.SO.NOSIGPIPE, std.mem.asBytes(&on), @sizeOf(c_int)) != 0) return error.Sys;
-    while (c.connect(s.raw, @ptrCast(&addr), @sizeOf(c.sockaddr.un)) != 0) {
-        if (!interrupted()) return error.Sys;
-    }
+    const fl = c.fcntl(s.raw, c.F.GETFL);
+    const nonblock: c_int = @bitCast(c.O{ .NONBLOCK = true });
+    if (fl < 0 or c.fcntl(s.raw, c.F.SETFL, fl | nonblock) != 0) return error.Sys;
+    if (c.connect(s.raw, @ptrCast(&addr), @sizeOf(c.sockaddr.un)) != 0) return error.Sys;
+    if (c.fcntl(s.raw, c.F.SETFL, fl) != 0) return error.Sys;
     return sock;
 }
 
@@ -146,6 +172,7 @@ test "a connect to a socket no one listens on is refused, and a send to one that
     defer s.close();
     const conn = try std.posix.accept(l, null, null, 0);
     try std.testing.expectEqual(@as(u32, @intCast(c.getpid())), try s.peerPid());
+    try std.testing.expectEqual(c.getuid(), try s.peerUid());
     std.posix.close(conn);
     std.posix.close(l);
     var b: [1]u8 = undefined;
@@ -153,4 +180,27 @@ test "a connect to a socket no one listens on is refused, and a send to one that
     var big: [65536]u8 = @splat(0);
     try std.testing.expectError(error.Sys, s.sendAll(&big));
     try std.testing.expectError(error.Sys, connectUnix("fd-test.sock"));
+}
+
+test "a connect to a listener whose backlog is full is refused, not waited on, and a connected socket blocks" {
+    std.posix.unlink("fd-full-test.sock") catch |err| std.debug.assert(err == error.FileNotFound);
+    defer std.posix.unlink("fd-full-test.sock") catch |err| std.debug.panic("unlink: {}", .{err});
+    const addr = try std.net.Address.initUnix("fd-full-test.sock");
+    const l = try std.posix.socket(c.AF.UNIX, c.SOCK.STREAM, 0);
+    defer std.posix.close(l);
+    try std.posix.bind(l, &addr.any, addr.getOsSockLen());
+    try std.posix.listen(l, 0);
+    var held: [capacity]?Sock = @splat(null);
+    defer for (held) |h| if (h) |x| x.close();
+    var refused = false;
+    for (&held) |*h| {
+        h.* = connectUnix("fd-full-test.sock") catch {
+            refused = true;
+            break;
+        };
+    }
+    try std.testing.expect(refused and held[0] != null);
+    const fl = c.fcntl(live(held[0].?.slot, held[0].?.gen).raw, c.F.GETFL);
+    const nonblock: c_int = @bitCast(c.O{ .NONBLOCK = true });
+    try std.testing.expect(fl >= 0 and fl & nonblock == 0);
 }

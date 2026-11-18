@@ -3,18 +3,25 @@
 //! the gate's remote half (internal/sudogate/remote.go) itself, in the same
 //! order and with the same outcomes as the Linux plugin and gate:
 //!
-//!   open      arms, as Linux checks in: the gated user, not -l or -v, no
-//!             tty, a chain under sshd, `remote`, a usable SSH_AUTH_SOCK,
-//!             and listed keys that parse. Any miss is stock sudo.
+//!   open      arms, as Linux checks in remote: the gated user, not -l or
+//!             -v, no tty, `remote`, a usable SSH_AUTH_SOCK served by a
+//!             forwarder, and listed keys that parse. Any miss is stock
+//!             sudo. As on Linux, the agent is connected to as the
+//!             invoking user, its listener's uid taken from
+//!             LOCAL_PEERCRED and its pid from LOCAL_PEERPID, its program
+//!             read as root with proc_pidpath, and the connection kept for
+//!             the signature. A drop or restore that fails refuses.
 //!   PAM       quoin_sudo_pam.so, sufficient in sudo_local, skips the
 //!             password only for a sudo this plugin armed, as the Linux
 //!             helper does for one that checked in.
-//!   accept    builds quoin-sudo-v1 from sudoers' command_info, has the
-//!             forwarded agent sign it as the invoking user, and verifies
-//!             the signature against the listed keys. Anything but a good
-//!             signature from a listed key -- a refusal, an agent that
-//!             cannot be reached, hangs up or answers garbage, no listed
-//!             key, a bad signature -- refuses, as the gate does.
+//!   accept    builds quoin-sudo-v2 from sudoers' command_info and the
+//!             chain above sudo, has the forwarded agent sign it on open's
+//!             connection, and verifies the signature against the listed
+//!             keys. Anything but a good signature from a listed key -- a
+//!             refusal, an agent that cannot be reached, hangs up or
+//!             answers garbage, no listed key, a bad signature -- refuses,
+//!             as the gate does. The Mac has no danger catalogue, so its
+//!             message's danger and env lines are empty.
 //!
 //! Nothing waits on a timer: the agent is asked as long as sudo's caller
 //! waits. sudo.conf: `Plugin quoin_audit <so> user=<forUser> remote
@@ -44,6 +51,12 @@ var user_info: CArray = null;
 var armed = false;
 var agent_path_buf: [104]u8 = undefined;
 var agent_path: []const u8 = "";
+/// The forwarded agent's connection, made at open and kept for the
+/// signature, so no second connect opens a second forwarded channel.
+var agent_conn: ?fd.Sock = null;
+/// The drop to the invoking user, or the restore, failed at open.
+var drop_failed = false;
+var exe_buf: [chain.max_exe_path]u8 = undefined;
 
 var links: [chain.max_links]chain.Link = undefined;
 var keys_buf: [4 + max_keys * (4 + max_blob)]u8 = undefined;
@@ -51,6 +64,7 @@ var keys: []const u8 = "";
 var host_buf: [max_keys][max_blob]u8 = undefined;
 var host_keys: [max_keys][]const u8 = undefined;
 var argv_words: [max_argv][]const u8 = undefined;
+var message_links: [chain.max_links]sudomsg.Link = undefined;
 var message_buf: [sudomsg.max_size]u8 = undefined;
 var agent_buf: [agent.max_frame]u8 = undefined;
 var user_groups: [ids.max_groups]u32 = undefined;
@@ -102,14 +116,46 @@ fn number(a: CArray, key: []const u8) ?u32 {
     return std.fmt.parseInt(u32, std.mem.span(lookup(a, key) orelse return null), 10) catch null;
 }
 
-/// Linux's gating test: the gated user, no tty, a chain under sshd.
-fn remoteGated(user: [*:0]const u8) bool {
-    const name = lookup(user_info, "user") orelse return false;
-    if (!std.mem.eql(u8, std.mem.span(name), std.mem.span(user))) return false;
-    if (lookup(user_info, "tty") != null) return false;
-    const uid = number(user_info, "uid") orelse return false;
-    const n = chain.walk(chain.parentPid(), &links);
-    return config.force_remote or chain.sshLogin(links[0..n], uid);
+/// Linux's gating test without the mode: the gated user with no tty; the
+/// invoking uid.
+fn gating(user: [*:0]const u8) ?u32 {
+    const name = lookup(user_info, "user") orelse return null;
+    if (!std.mem.eql(u8, std.mem.span(name), std.mem.span(user))) return null;
+    if (lookup(user_info, "tty") != null) return null;
+    return number(user_info, "uid");
+}
+
+/// Whether `conn`'s listener is a forwarder of the invoking user's: its
+/// uid as the kernel recorded it, and its program read as root, as Linux's
+/// forwarded.
+fn forwarded(conn: ?fd.Sock, uid: u32) bool {
+    const s = conn orelse return false;
+    if ((s.peerUid() catch return false) != uid) return false;
+    const exe = chain.exePath(s.peerPid() catch return false, &exe_buf) orelse return false;
+    return chain.isForwarder(exe);
+}
+
+/// Connects to the agent at agent_path as the invoking user, never as
+/// root. Null when it cannot, with drop_failed set when the drop or the
+/// restore failed.
+fn connectAgent() ?fd.Sock {
+    const uid = number(user_info, "uid");
+    const gid = number(user_info, "gid");
+    const list = lookup(user_info, "groups");
+    const groups = if (list) |l| groupList(l) else null;
+    if (uid == null or gid == null or groups == null) {
+        drop_failed = true;
+        return null;
+    }
+    return ids.connectAs(ids.Libc, agent_path, uid.?, gid.?, groups.?) catch |e| {
+        if (e != error.Connect) drop_failed = true;
+        return null;
+    };
+}
+
+fn closeAgent() void {
+    if (agent_conn) |s| s.close();
+    agent_conn = null;
 }
 
 fn keepAgentPath(user_env: CArray) bool {
@@ -144,24 +190,34 @@ fn open(
     say_fn = plugin_printf;
     user_info = @ptrCast(user_info_in);
     armed = false;
+    drop_failed = false;
+    closeAgent();
     agent_path = "";
     const options: CArray = @ptrCast(plugin_options);
     gated_user = lookup(options, "user");
     const user = gated_user orelse return 1;
     if (args.listOrValidate(submit_argv, submit_optind)) return 1;
-    if (!remoteGated(user)) return 1;
+    const uid = gating(user) orelse return 1;
     if (!has(options, "remote") or !keepAgentPath(@ptrCast(submit_envp))) return 1;
     const path = lookup(options, "keys") orelse return 1;
+    const conn = connectAgent();
+    if (!(config.force_remote or forwarded(conn, uid))) {
+        if (conn) |s| s.close();
+        return 1;
+    }
     if (!loadKeys(path)) {
+        if (conn) |s| s.close();
         say("quoin-sudo: the remote keys do not parse; remote sudo is off");
         return 1;
     }
+    agent_conn = conn;
     armed = true;
     return 1;
 }
 
 fn close(status_type: c_int, status: c_int) callconv(.c) void {
     _ = .{ status_type, status };
+    closeAgent();
     armed = false;
 }
 
@@ -182,13 +238,17 @@ fn accept(
     if (plugin_type != c.SUDO_POLICY_PLUGIN) return 1;
     const info: CArray = @ptrCast(command_info);
     if (listOrValidateRun(info)) return 1;
+    if (drop_failed) {
+        var rec: Record = .{};
+        return dropFailed(&rec, errstr);
+    }
     if (!armed) return 1;
-    return approve(info, @ptrCast(run_argv), errstr);
+    return approve(info, @ptrCast(run_argv));
 }
 
 /// The gate's approveRemote and sign, in one: 1 only for a good signature
 /// from a listed key over this sudo's message.
-fn approve(info: CArray, run_argv: CArray, errstr: [*c][*c]const u8) c_int {
+fn approve(info: CArray, run_argv: CArray) c_int {
     var rec: Record = .{};
     const program = std.mem.span(lookup(info, "command") orelse return refuse(&rec, "bad request", "bad request", null));
     rec.user = std.mem.span(lookup(user_info, "user") orelse "");
@@ -209,17 +269,27 @@ fn approve(info: CArray, run_argv: CArray, errstr: [*c][*c]const u8) c_int {
     var nonce: [sudomsg.nonce_size]u8 = undefined;
     std.crypto.random.bytes(&nonce);
     rec.nonce = &nonce;
-    const raw = sudomsg.marshal(.{ .nonce = &nonce, .host_keys = hosts, .user = rec.user, .run_as = rec.run_as, .cwd = rec.cwd, .argv = rec.argv }, &message_buf) catch |e|
-        return refuse(&rec, "message", if (e == error.TooLong) "command too long for the gate" else "bad request", null);
-
-    const uid = number(user_info, "uid") orelse return dropFailed(&rec, errstr);
-    const gid = number(user_info, "gid") orelse return dropFailed(&rec, errstr);
-    const groups = groupList(lookup(user_info, "groups") orelse return dropFailed(&rec, errstr)) orelse return dropFailed(&rec, errstr);
-    const s = ids.connectAs(ids.Libc, agent_path, uid, gid, groups) catch |e| switch (e) {
-        error.Connect => return refuse(&rec, "agent", "quoin-sudo: cannot connect to the forwarded agent", "cannot connect to the forwarded agent"),
-        error.Drop, error.Restore => return dropFailed(&rec, errstr),
+    const n_links = chain.walk(chain.parentPid(), &links);
+    for (links[0..n_links], message_links[0..n_links]) |*l, *out| {
+        out.* = .{ .pid = l.pid, .ppid = l.ppid, .start = l.start, .uid = l.uid, .tty = l.tty, .comm = l.comm(), .cmdline = l.cmdline() };
+    }
+    rec.chain = links[0..n_links];
+    const m: sudomsg.MessageV2 = .{ .nonce = &nonce, .host_keys = hosts, .user = rec.user, .run_as = rec.run_as, .cwd = rec.cwd, .argv = rec.argv, .links = message_links[0..n_links] };
+    // The agent's sign request is the message, the key blob and flags,
+    // after its type byte and length: the message's room is what is left,
+    // as the Linux gate's.
+    const limit = sudomsg.max_size - (1 + 4 + longestKey(keys) + 4 + 4);
+    const raw = sudomsg.marshalV2(m, message_buf[0..limit]) catch |first| blk: {
+        if (first == error.TooLong) {
+            if (sudomsg.marshalWithin(m, limit, &message_buf)) |cut| {
+                rec.cmdlines_left_out = true;
+                break :blk cut;
+            } else |_| {}
+        }
+        return refuse(&rec, "message", if (first == error.TooLong) "command too long for the gate" else "bad request", null);
     };
-    defer s.close();
+
+    const s = agent_conn orelse return refuse(&rec, "agent", "quoin-sudo: cannot connect to the forwarded agent", "cannot connect to the forwarded agent");
     switch (agent.sign(s, keys, raw, &agent_buf)) {
         .failed => |why| {
             var msg: [256]u8 = undefined;
@@ -233,6 +303,15 @@ fn approve(info: CArray, run_argv: CArray, errstr: [*c][*c]const u8) c_int {
             return 1;
         },
     }
+}
+
+/// The longest of the listed keys, in agent.validKeys' form.
+fn longestKey(listed: []const u8) usize {
+    var r: agent.Reader = .{ .b = listed };
+    const n = r.int() orelse return 0;
+    var longest: usize = 0;
+    for (0..n) |_| longest = @max(longest, (r.string() orelse return longest).len);
+    return longest;
 }
 
 fn dropFailed(rec: *Record, errstr: [*c][*c]const u8) c_int {
@@ -312,6 +391,8 @@ const Record = struct {
     argv: []const []const u8 = &.{},
     host_keys: []const []const u8 = &.{},
     nonce: ?*const [sudomsg.nonce_size]u8 = null,
+    chain: []const chain.Link = &.{},
+    cmdlines_left_out: bool = false,
     key: []const u8 = "",
 
     fn write(r: Record, outcome: []const u8, source: []const u8, reason: ?[]const u8) void {
@@ -346,6 +427,13 @@ const Record = struct {
             try quoted(w, a);
         }
         try w.writeAll("]");
+        try w.writeAll(" chain=[");
+        for (r.chain, 0..) |*l, i| {
+            if (i > 0) try w.writeAll(" ");
+            try quoted(w, l.comm());
+        }
+        try w.writeAll("]");
+        if (r.cmdlines_left_out) try w.writeAll(" cmdlines_left_out=true");
         try w.print(" key={s} outcome={s}", .{ r.key, outcome });
         try field(w, "source", source);
         if (reason) |why| try field(w, "reason", why);

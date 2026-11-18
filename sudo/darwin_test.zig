@@ -1,4 +1,5 @@
-//! The darwin plugin from outside, built to take every chain for remote:
+//! The darwin plugin from outside, built to take every agent for a
+//! forwarder's:
 //! open, quoin_sudo_armed (the PAM module's question) and accept, against
 //! a test agent on a socket that holds a real nistp256 key. An armed sudo
 //! is approved by a good signature from a listed key and by nothing else;
@@ -295,7 +296,7 @@ fn armedSudo(answer: Answer) !struct { accepted: c_int, agent: *Agent } {
     return .{ .accepted = got, .agent = a };
 }
 
-test "a good signature from a listed key approves, over the message Go's gate would have built" {
+test "a good signature from a listed key approves, over the v2 message Go's gate would have built, the chain above sudo in it" {
     try fixture();
     const r = try armedSudo(.sign);
     defer testing.allocator.destroy(r.agent);
@@ -303,7 +304,7 @@ test "a good signature from a listed key approves, over the message Go's gate wo
     try testing.expectEqual(@as(c_int, 0), plugin.quoin_sudo_armed());
     const msg = r.agent.message[0..r.agent.message_len];
     var rd: agent.Reader = .{ .b = msg };
-    try testing.expectEqualStrings(sudomsg.magic, rd.string().?);
+    try testing.expectEqualStrings(sudomsg.magic_v2, rd.string().?);
     try testing.expectEqual(@as(usize, 32), rd.string().?.len);
     try testing.expectEqual(@as(u32, 2), rd.int().?);
     var first: agent.Reader = .{ .b = rd.string().? };
@@ -317,11 +318,26 @@ test "a good signature from a listed key approves, over the message Go's gate wo
     try testing.expectEqual(@as(u32, 2), rd.int().?);
     try testing.expectEqualStrings("/usr/bin/id", rd.string().?);
     try testing.expectEqualStrings("-un", rd.string().?);
-    try testing.expectEqualStrings("", rd.string().?);
-    try testing.expectEqual(@as(u32, 0), rd.int().?);
+    try testing.expectEqual(@as(u32, 0), rd.int().?); // danger: the Mac has no catalogue
+    try testing.expectEqual(@as(u32, 0), rd.int().?); // env
+    try testing.expectEqual(@as(u32, 0), rd.int().?); // flags: nothing left out
+    const n = rd.int().?;
+    try testing.expect(n >= 1 and n <= sudomsg.max_links);
+    for (0..n) |i| {
+        var link: agent.Reader = .{ .b = rd.string().? };
+        const pid = std.mem.readInt(u32, link.b[0..4], .big);
+        if (i == 0) try testing.expectEqual(@as(u32, @intCast(c.getppid())), pid);
+        if (i == 0) try testing.expectEqual(@as(u32, @intCast(c.getuid())), std.mem.readInt(u32, link.b[16..20], .big));
+        const comm_len = std.mem.readInt(u16, link.b[24..26], .big);
+        try testing.expect(comm_len > 0);
+        const cmdline_len = std.mem.readInt(u16, link.b[26 + comm_len ..][0..2], .big);
+        try testing.expectEqual(link.b.len, 26 + comm_len + 2 + cmdline_len);
+        if (i == 0) try testing.expect(cmdline_len > 0);
+    }
     try testing.expect(rd.done());
     var lb: [8192]u8 = undefined;
     const rec = try lastRecord(&lb);
+    try testing.expect(std.mem.indexOf(u8, rec, " chain=[\"") != null);
     try testing.expect(std.mem.indexOf(u8, rec, " outcome=allow source=\"signature\"") != null);
     try testing.expect(std.mem.indexOf(u8, rec, " key=SHA256:") != null);
 }
