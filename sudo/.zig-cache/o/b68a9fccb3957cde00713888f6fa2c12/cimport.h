@@ -1,0 +1,9 @@
+#define _GNU_SOURCE
+#include <unistd.h>
+#include <grp.h>
+#include <sudo_plugin.h>
+#include <security/pam_appl.h>
+#include <security/pam_modules.h>
+#include <sys/sysctl.h>
+#include <dlfcn.h>
+#include <libproc.h>

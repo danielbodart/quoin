@@ -14,7 +14,7 @@
 //!   PAM       quoin_sudo_pam.so, sufficient in sudo_local, skips the
 //!             password only for a sudo this plugin armed, as the Linux
 //!             helper does for one that checked in.
-//!   accept    builds quoin-sudo-v2 from sudoers' command_info and the
+//!   accept    builds the quoin-sudo message from sudoers' command_info and the
 //!             chain above sudo, has the forwarded agent sign it on open's
 //!             connection, and verifies the signature against the listed
 //!             keys. Anything but a good signature from a listed key -- a
@@ -274,12 +274,12 @@ fn approve(info: CArray, run_argv: CArray) c_int {
         out.* = .{ .pid = l.pid, .ppid = l.ppid, .start = l.start, .uid = l.uid, .tty = l.tty, .comm = l.comm(), .cmdline = l.cmdline() };
     }
     rec.chain = links[0..n_links];
-    const m: sudomsg.MessageV2 = .{ .nonce = &nonce, .host_keys = hosts, .user = rec.user, .run_as = rec.run_as, .cwd = rec.cwd, .argv = rec.argv, .links = message_links[0..n_links] };
+    const m: sudomsg.Message = .{ .nonce = &nonce, .host_keys = hosts, .user = rec.user, .run_as = rec.run_as, .cwd = rec.cwd, .argv = rec.argv, .links = message_links[0..n_links] };
     // The agent's sign request is the message, the key blob and flags,
     // after its type byte and length: the message's room is what is left,
     // as the Linux gate's.
     const limit = sudomsg.max_size - (1 + 4 + longestKey(keys) + 4 + 4);
-    const raw = sudomsg.marshalV2(m, message_buf[0..limit]) catch |first| blk: {
+    const raw = sudomsg.marshal(m, message_buf[0..limit]) catch |first| blk: {
         if (first == error.TooLong) {
             if (sudomsg.marshalWithin(m, limit, &message_buf)) |cut| {
                 rec.cmdlines_left_out = true;
@@ -289,6 +289,9 @@ fn approve(info: CArray, run_argv: CArray) c_int {
         return refuse(&rec, "message", if (first == error.TooLong) "command too long for the gate" else "bad request", null);
     };
 
+    // Closed as soon as the agent answers, so the command sudo runs after
+    // does not hold a forwarded channel, or ssh, open until it exits.
+    defer closeAgent();
     const s = agent_conn orelse return refuse(&rec, "agent", "quoin-sudo: cannot connect to the forwarded agent", "cannot connect to the forwarded agent");
     switch (agent.sign(s, keys, raw, &agent_buf)) {
         .failed => |why| {

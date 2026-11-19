@@ -220,9 +220,9 @@ func TestOwnHostsWidenNoRuleAndNeverRemoteSudo(t *testing.T) {
 		t.Error("a push to a host set to ask was made unasked")
 	}
 
-	done = h.through(blade).signAsync(h.key(0), sudoMessage(t, "", nil, blade.PublicKey()))
+	done = h.through(blade).signAsync(h.key(0), sudoMessage(t, blade.PublicKey()))
 	a = h.next()
-	if a.q.Title != "sudo on dan-blade" {
+	if a.q.Title != "sudo systemctl stop sshd.service on dan-blade" {
 		t.Errorf("asked %+v", a.q)
 	}
 	a.reply <- answered{}

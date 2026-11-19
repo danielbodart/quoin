@@ -821,22 +821,22 @@ func FuzzNoAgentMessageCrashesTheParser(f *testing.F) {
 	f.Add(signMsg(key, userauthData([]byte("sid"), key, nil)))
 	remote, err := (&sudomsg.Message{
 		Nonce: make([]byte, sudomsg.NonceSize), HostKeys: [][]byte{host.PublicKey().Marshal()},
-		User: "dan", RunAs: "root", Cwd: "/", Argv: []string{"/bin/id"}, Level: "danger", Reasons: []string{"why"},
+		User: "dan", RunAs: "root", Cwd: "/", Argv: []string{"/bin/id"},
 	}).Marshal()
 	if err != nil {
 		f.Fatal(err)
 	}
 	f.Add(append(bind, signMsg(key, remote)...))
 	f.Add(signMsg(key, remote))
-	remoteV2, err := (&sudomsg.Message{
-		Version: sudomsg.V2, Nonce: make([]byte, sudomsg.NonceSize), HostKeys: [][]byte{host.PublicKey().Marshal()},
+	remoteChain, err := (&sudomsg.Message{
+		Nonce: make([]byte, sudomsg.NonceSize), HostKeys: [][]byte{host.PublicKey().Marshal()},
 		User: "dan", RunAs: "root", Cwd: "/", Argv: []string{"/bin/id"}, Danger: []string{"why"},
 		Links: claude(100).Chain,
 	}).Marshal()
 	if err != nil {
 		f.Fatal(err)
 	}
-	f.Add(append(bind, signMsg(key, remoteV2)...))
+	f.Add(append(bind, signMsg(key, remoteChain)...))
 	f.Add(append(bind, signMsg(key, make([]byte, 32))...))
 	for _, name := range []string{"sshsig-git.bin", "sshsig-file.bin"} {
 		b, err := os.ReadFile(filepath.Join("testdata", name))

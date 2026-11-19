@@ -248,17 +248,12 @@ func TestATruncatedChainSaysSoAmongTheWarnings(t *testing.T) {
 	}
 }
 
-func TestOnlyAV2MessageWithACommandIsASubject(t *testing.T) {
+func TestOnlyAMessageWithACommandIsASubject(t *testing.T) {
 	s := subjects(t)["plain"]
 	m := Message(s, make([]byte, sudomsg.NonceSize), [][]byte{hostKey(t)})
 	m.Argv = nil
 	if _, err := FromMessage(m); err == nil {
 		t.Error("no command was a subject")
-	}
-	for _, v := range []int{0, sudomsg.V1} {
-		if _, err := FromMessage(&sudomsg.Message{Version: v, Argv: []string{"x"}}); err == nil {
-			t.Errorf("version %d was a subject", v)
-		}
 	}
 }
 
@@ -274,28 +269,5 @@ func TestMessageLeavesTheSubjectsChainAloneWhenItsCommandLinesAreLeftOut(t *test
 	}
 	if top := s.Chain.Chain[len(s.Chain.Chain)-1]; top.Cmdline == nil || m.Links[len(m.Links)-1].Cmdline != nil {
 		t.Errorf("subject's top %+v, message's %+v", top, m.Links[len(m.Links)-1])
-	}
-	if m.Version != sudomsg.V2 || m.Level != "" || m.Reasons != nil {
-		t.Errorf("%+v", m)
-	}
-}
-
-func TestAV1MessageIsAskedAsSignersAlwaysAskedIt(t *testing.T) {
-	m := &sudomsg.Message{
-		Version: sudomsg.V1, User: "dan", RunAs: "root", Cwd: "/home/dan",
-		Argv: []string{systemctl, "stop", "sshd.service"}, Level: "danger",
-		Reasons: []string{"touches a unit that guards this machine"},
-	}
-	h := here()
-	q := Legacy(m, Options{Host: "dan-desktop", Here: h, Footer: []string{"key SHA256:… (dan@dan-blade)"}})
-	want := "touches a unit that guards this machine\n\n" + systemctl + " stop sshd.service\ndan as root in /home/dan\nkey SHA256:… (dan@dan-blade)"
-	if q.Title != "sudo on dan-desktop" || q.Level != "danger" || q.Text != want || q.Allow != "Allow" ||
-		!reflect.DeepEqual(q.Chain, galleyask.Chain(h)) {
-		t.Errorf("got %+v", q)
-	}
-	m.Level, m.Reasons = "", nil
-	if q := Legacy(m, Options{Host: "h", Here: peer.FromLinks(h.Chain[:2])}); q.Level != "warning" ||
-		!strings.HasPrefix(q.Text, "the process chain was cut short\n\n") {
-		t.Errorf("no level, a cut chain here: %q %q", q.Level, q.Text)
 	}
 }

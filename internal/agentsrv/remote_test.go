@@ -18,22 +18,13 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func sudoMessage(t *testing.T, level string, reasons []string, hosts ...ssh.PublicKey) []byte {
+// sudoMessage is a remote sudo of systemctl stop sshd.service, with the
+// server's chain and no danger, for hosts.
+func sudoMessage(t *testing.T, hosts ...ssh.PublicKey) []byte {
 	t.Helper()
-	m := &sudomsg.Message{
-		Nonce: bytes.Repeat([]byte{7}, sudomsg.NonceSize),
-		User:  "dan", RunAs: "root", Cwd: "/home/dan",
-		Argv:  []string{"/run/current-system/sw/bin/systemctl", "stop", "sshd.service"},
-		Level: level, Reasons: reasons,
-	}
-	for _, h := range hosts {
-		m.HostKeys = append(m.HostKeys, h.Marshal())
-	}
-	b, err := m.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
+	s := sudoSubject(serverChain())
+	s.Danger, s.Env = nil, nil
+	return sudoMessageFor(t, s, hosts...)
 }
 
 // forwarded is claude running ssh -A to host, whose forwarded channel
@@ -49,7 +40,7 @@ func (h *harness) forwarded(host ssh.Signer) *client {
 
 func TestARemoteSudoSignIsAskedOnlyWhenForwardedAndBoundToOneOfItsHostKeys(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	msg := sudoMessage(t, "", nil, hostKey(t).PublicKey(), h.server.PublicKey())
+	msg := sudoMessage(t, hostKey(t).PublicKey(), h.server.PublicKey())
 
 	refused := func(name string, c *client) {
 		t.Helper()
@@ -88,32 +79,38 @@ func appendString(b []byte, s string) []byte {
 func TestARemoteSudoMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	h.loginSigner.Store(true)
-	host := string(h.server.PublicKey().Marshal())
-	build := func(nonce string, hosts []string, level string, extra string) []byte {
+	host := h.server.PublicKey()
+	good := sudoMessage(t, host)
+	head := func(nonce string, hosts []string) []byte {
 		b := appendString(nil, sudomsg.Magic)
 		b = appendString(b, nonce)
 		b = binary.BigEndian.AppendUint32(b, uint32(len(hosts)))
 		for _, k := range hosts {
 			b = appendString(b, k)
 		}
-		for _, s := range []string{"dan", "root", "/"} {
-			b = appendString(b, s)
-		}
-		b = binary.BigEndian.AppendUint32(b, 1)
-		b = appendString(b, "/bin/id")
-		b = appendString(b, level)
-		b = binary.BigEndian.AppendUint32(b, 0)
-		return append(b, extra...)
+		return b
 	}
 	nonce := strings.Repeat("n", sudomsg.NonceSize)
-	good := build(nonce, []string{host}, "", "")
+	blob := string(host.Marshal())
+	fields := good[len(head(nonce, []string{blob})):]
+	// An old gate's message: the user, runas and cwd strings, argv, a
+	// level and its reasons, where the fields now are.
+	old := head(nonce, []string{blob})
+	for _, s := range []string{"dan", "root", "/"} {
+		old = appendString(old, s)
+	}
+	old = binary.BigEndian.AppendUint32(old, 1)
+	old = appendString(old, "/bin/id")
+	old = appendString(old, "")
+	old = binary.BigEndian.AppendUint32(old, 0)
 	for name, msg := range map[string][]byte{
-		"a short nonce":    build(nonce[1:], []string{host}, "", ""),
-		"no host keys":     build(nonce, nil, "", ""),
-		"a bad key blob":   build(nonce, []string{host, "junk"}, "", ""),
-		"an unknown level": build(nonce, []string{host}, "normal", ""),
-		"a missing field":  good[:len(good)-4],
-		"trailing bytes":   build(nonce, []string{host}, "", "x"),
+		"a short nonce":  append(head(nonce[1:], []string{blob}), fields...),
+		"no host keys":   append(head(nonce, nil), fields...),
+		"a bad key blob": append(head(nonce, []string{blob, "junk"}), fields...),
+		"cut short":      good[:len(good)-1],
+		"trailing bytes": append(bytes.Clone(good), 0),
+		"argv unmarked":  withField(t, good, "argv", ""),
+		"an old gate's":  old,
 	} {
 		if err := wait(t, h.forwarded(h.server).signAsync(h.key(0), msg)); err == nil {
 			t.Errorf("%s: signed", name)
@@ -129,7 +126,7 @@ func TestARemoteSudoMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 
 func TestARemoteSudoSignIsNeverSilentNorGranted(t *testing.T) {
 	h := newHarness(t, 1, nil)
-	msg := sudoMessage(t, "", nil, h.github.PublicKey())
+	msg := sudoMessage(t, h.github.PublicKey())
 	ask := func(name string, c *client, answer answered) {
 		t.Helper()
 		done := c.signAsync(h.key(0), msg)
@@ -161,37 +158,6 @@ func TestARemoteSudoSignIsNeverSilentNorGranted(t *testing.T) {
 
 	ask("an Allow for 15 minutes", h.forwarded(h.github), allowFor(15*time.Minute))
 	ask("after that Allow", h.forwarded(h.github), answered{})
-}
-
-func TestTheRemoteSudoQuestionNamesTheHostTheCommandAndTheLevel(t *testing.T) {
-	h := newHarness(t, 1, nil)
-	fp := ssh.FingerprintSHA256(h.key(0))
-	for _, tc := range []struct {
-		host    ssh.Signer
-		title   string
-		level   string
-		reasons []string
-		text    string
-		wantLvl string
-	}{
-		{h.github, "sudo on github.com", "", nil,
-			"/run/current-system/sw/bin/systemctl stop sshd.service\ndan as root in /home/dan\nkey " + fp + " (dan@test)", "normal"},
-		{h.server, "sudo on " + ssh.FingerprintSHA256(h.server.PublicKey()), "danger", []string{"touches a unit that guards this machine", "LD_PRELOAD=/tmp/\x1bx.so"},
-			"touches a unit that guards this machine\nLD_PRELOAD=/tmp/\\u001bx.so\n\n/run/current-system/sw/bin/systemctl stop sshd.service\ndan as root in /home/dan\nkey " + fp + " (dan@test)", "danger"},
-		{h.github, "sudo on github.com", "warning", []string{"the process chain was cut short"},
-			"the process chain was cut short\n\n/run/current-system/sw/bin/systemctl stop sshd.service\ndan as root in /home/dan\nkey " + fp + " (dan@test)", "warning"},
-	} {
-		done := h.forwarded(tc.host).signAsync(h.key(0), sudoMessage(t, tc.level, tc.reasons, tc.host.PublicKey()))
-		a := h.next()
-		if a.q.Title != tc.title || a.q.Text != tc.text || a.q.Level != tc.wantLvl {
-			t.Errorf("asked %q %q\n%q", a.q.Title, a.q.Level, a.q.Text)
-		}
-		a.reply <- answered{}
-		wait(t, done)
-	}
-	if !strings.Contains(h.log.String(), `"class":"remote sudo"`) || !strings.Contains(h.log.String(), `"nonce":"0707`) {
-		t.Errorf("the journal lacks the message:\n%s", h.log.String())
-	}
 }
 
 func TestAnotherForwardedBoundSignIsAskedAllowOnceAndAnUnboundOneRefused(t *testing.T) {
@@ -230,25 +196,6 @@ func TestAnotherForwardedBoundSignIsAskedAllowOnceAndAnUnboundOneRefused(t *test
 	}
 }
 
-func TestACutClientChainRaisesARemoteSudoToWarningAndSaysSo(t *testing.T) {
-	h := newHarness(t, 1, nil)
-	for _, tc := range []struct{ level, want string }{{"", "warning"}, {"danger", "danger"}} {
-		c := h.dial(links(claude(100).Chain[:4]...))
-		if err := c.bind(t, h.github, []byte("sid"), true); err != nil {
-			t.Fatal(err)
-		}
-		done := c.signAsync(h.key(0), sudoMessage(t, tc.level, nil, h.github.PublicKey()))
-		a := h.next()
-		if a.q.Level != tc.want || !strings.HasPrefix(a.q.Text, "the process chain was cut short\n") {
-			t.Errorf("asked %q %q", a.q.Level, a.q.Text)
-		}
-		a.reply <- answered{}
-		wait(t, done)
-	}
-}
-
-// serverChain is a sudo's chain on the host it runs on: bash under claude
-// under the login's sshd-session pair.
 func serverChain() []peer.Link {
 	return []peer.Link{
 		{Pid: 4242, PPid: 4241, Start: 900, UID: 1000, Comm: "bash", Cmdline: []string{"bash", "-c", "sudo systemctl stop sshd.service"}},
@@ -269,7 +216,7 @@ func sudoSubject(chain []peer.Link) sudoq.Subject {
 	}
 }
 
-func sudoMessageV2(t *testing.T, s sudoq.Subject, hosts ...ssh.PublicKey) []byte {
+func sudoMessageFor(t *testing.T, s sudoq.Subject, hosts ...ssh.PublicKey) []byte {
 	t.Helper()
 	var blobs [][]byte
 	for _, h := range hosts {
@@ -282,11 +229,11 @@ func sudoMessageV2(t *testing.T, s sudoq.Subject, hosts ...ssh.PublicKey) []byte
 	return b
 }
 
-func TestAV2RemoteSudoIsAskedAsItsHostWouldAskItWithThisMachineOnlyFromHere(t *testing.T) {
+func TestARemoteSudoIsAskedAsItsHostWouldAskItWithThisMachineOnlyFromHere(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	fp := ssh.FingerprintSHA256(h.key(0))
 	s := sudoSubject(serverChain())
-	done := h.forwarded(h.github).signAsync(h.key(0), sudoMessageV2(t, s, h.github.PublicKey()))
+	done := h.forwarded(h.github).signAsync(h.key(0), sudoMessageFor(t, s, h.github.PublicKey()))
 	a := h.next()
 	local := sudoq.Question(s, sudoq.Options{})
 	want := local.Text + "\n\nfrom here: " + galleyask.Summary(claude(100)) + "\nkey " + fp + " (dan@test)"
@@ -304,7 +251,7 @@ func TestAV2RemoteSudoIsAskedAsItsHostWouldAskItWithThisMachineOnlyFromHere(t *t
 		t.Fatal(err)
 	}
 	log := h.log.String()
-	for _, w := range []string{`"remote_chain":[{"Pid":4242`, `"sshd-session: dan@notty"`, `"version":2`, `"danger":["touches a unit that guards this machine"]`,
+	for _, w := range []string{`"remote_chain":[{"Pid":4242`, `"sshd-session: dan@notty"`, `"class":"remote sudo"`, `"nonce":"0707`, `"danger":["touches a unit that guards this machine"]`,
 		`"env":["LD_PRELOAD=/tmp/x.so"]`, `"cmdlines_left_out":false`, `"chain":[{"Pid":103`, `"outcome":"sign"`} {
 		if !strings.Contains(log, w) {
 			t.Errorf("the journal lacks %s:\n%s", w, log)
@@ -312,7 +259,7 @@ func TestAV2RemoteSudoIsAskedAsItsHostWouldAskItWithThisMachineOnlyFromHere(t *t
 	}
 }
 
-func TestAV2RemoteSudoIsAWarningWhenEitherChainIsCutAndSaysWhich(t *testing.T) {
+func TestARemoteSudoIsAWarningWhenEitherChainIsCutAndSaysWhich(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	plain := sudoSubject(serverChain())
 	plain.Danger, plain.Env = nil, nil
@@ -333,7 +280,7 @@ func TestAV2RemoteSudoIsAWarningWhenEitherChainIsCutAndSaysWhich(t *testing.T) {
 		if err := c.bind(t, h.github, []byte("sid"), true); err != nil {
 			t.Fatal(err)
 		}
-		done := c.signAsync(h.key(0), sudoMessageV2(t, tc.s, h.github.PublicKey()))
+		done := c.signAsync(h.key(0), sudoMessageFor(t, tc.s, h.github.PublicKey()))
 		a := h.next()
 		text := strings.Split(a.q.Text, "\n")
 		for _, l := range tc.lines {
@@ -349,24 +296,52 @@ func TestAV2RemoteSudoIsAWarningWhenEitherChainIsCutAndSaysWhich(t *testing.T) {
 	}
 }
 
-func TestAV2RemoteSudoThatIsNotASubjectIsRefusedUnasked(t *testing.T) {
-	h := newHarness(t, 1, nil)
-	s := sudoSubject(serverChain())
-	s.Argv = nil
-	if err := wait(t, h.forwarded(h.github).signAsync(h.key(0), sudoMessageV2(t, s, h.github.PublicKey()))); err == nil {
-		t.Error("a v2 sudo with no command was signed")
+// withField is msg with one more field, key and value, after its others.
+func withField(t *testing.T, msg []byte, key, value string) []byte {
+	t.Helper()
+	at := 4 + len(sudomsg.Magic)
+	at += 4 + int(binary.BigEndian.Uint32(msg[at:]))
+	n := int(binary.BigEndian.Uint32(msg[at:]))
+	at += 4
+	for range n {
+		at += 4 + int(binary.BigEndian.Uint32(msg[at:]))
 	}
-	good := sudoMessageV2(t, sudoSubject(serverChain()), h.github.PublicKey())
-	for name, msg := range map[string][]byte{
-		"trailing bytes": append(bytes.Clone(good), 0),
-		"cut short":      good[:len(good)-1],
-	} {
-		if err := wait(t, h.forwarded(h.github).signAsync(h.key(0), msg)); err == nil {
-			t.Errorf("%s: signed", name)
-		}
+	if int(binary.BigEndian.Uint32(msg[at:])) != len(msg)-at-4 {
+		t.Fatal("the fields string is not last")
+	}
+	b := slices.Clone(msg)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(key)))
+	b = append(b, key...)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(value)))
+	b = append(b, value...)
+	binary.BigEndian.PutUint32(b[at:], uint32(len(b)-at-4))
+	return b
+}
+
+func TestARemoteSudoWithAFieldThisSignerDoesNotKnowIsAskedWithoutItUnlessItIsCritical(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	good := sudoMessageFor(t, sudoSubject(serverChain()), h.github.PublicKey())
+	done := h.forwarded(h.github).signAsync(h.key(0), good)
+	plain := h.next()
+	plain.reply <- answered{}
+	wait(t, done)
+	done = h.forwarded(h.github).signAsync(h.key(0), withField(t, good, "zz-note", "shown nowhere"))
+	a := h.next()
+	if a.q.Text != plain.q.Text || a.q.Title != plain.q.Title || a.q.Level != plain.q.Level || !reflect.DeepEqual(a.q.Chain, plain.q.Chain) {
+		t.Errorf("asked\n%+v\nnot as\n%+v", a.q, plain.q)
+	}
+	a.reply <- answered{a: galleyask.Answer{Allowed: true}}
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.log.String(), `"fields_ignored":["zz-note"]`) {
+		t.Errorf("the journal does not name the ignored field:\n%s", h.log.String())
+	}
+	if err := wait(t, h.forwarded(h.github).signAsync(h.key(0), withField(t, good, "!zz-note", "x"))); err == nil {
+		t.Error("a critical field this signer does not know was signed")
 	}
 	h.nothingAsked()
-	if !strings.Contains(h.log.String(), "remote sudo: a quoin-sudo-v2 message with no command") {
+	if !strings.Contains(h.log.String(), `a critical field this signer does not know: \"zz-note\"`) {
 		t.Errorf("the journal lacks the reason:\n%s", h.log.String())
 	}
 }

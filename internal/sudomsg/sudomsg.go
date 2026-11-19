@@ -1,12 +1,29 @@
 // Package sudomsg is the message a remote sudo asks the forwarded agent to
 // sign: built by quoin-sudo's gate and read by quoin-signer.
 //
-// There are two. quoin-sudo-v1 carries the command and a level with its
-// reasons, worked out at the gate. quoin-sudo-v2 carries what the question
-// is made of instead, the danger and environment lines and the remote
-// process chain, so the signer shows a remote sudo as the host would show a
-// local one, from bytes the gate read as root and the agent signs whole.
-// Version tells them apart; a signer reads both until every gate sends v2.
+// It carries what the question is made of, the command, who runs it, the
+// danger and environment lines and the remote process chain, so the signer
+// shows a remote sudo as the host would show a local one, from bytes the
+// gate read as root and the agent signs whole.
+//
+// After the magic, the nonce and the host keys comes one string of named
+// fields, each a key and a value, in ascending order of name. A field may
+// be added without a new magic: a reader drops one it does not know, unless
+// its key is marked critical with a "!", when it refuses the whole message
+// naming it. Every field this package knows is critical, since each is
+// part of what is approved; only a field a signer could leave unshown
+// without changing what the person approves may go unmarked.
+//
+// An unmarked field is no downgrade: the gate alone writes the message and
+// checks the signature over its own bytes, so nothing between can strip a
+// field, and a signer that drops one asks what it asked before the field
+// was made. A field must be critical when anything else is left out or
+// relaxed because it is there, as the chain, danger and env replaced the
+// level and reasons the first layout carried.
+//
+// The fields are one string so that a signer from before them, which reads
+// the magic as its own and that string as the user, finds nothing after it
+// and refuses the message rather than asking something else.
 package sudomsg
 
 import (
@@ -22,53 +39,61 @@ import (
 
 const (
 	Magic     = "quoin-sudo-v1"
-	MagicV2   = "quoin-sudo-v2"
 	NonceSize = 32
 	// MaxSize is OpenSSH's agent message limit.
 	MaxSize = 256 << 10
+	// MaxFields is the most fields a message has, known or not, and
+	// MaxKey the longest key, its mark included.
+	MaxFields = 32
+	MaxKey    = 64
+	// Critical marks a key as one a reader that does not know it must
+	// refuse.
+	Critical = "!"
 )
 
-// The versions: a Message's zero Version is V1.
+// The fields, by name. Each is critical; chain, cut, danger and env are
+// left out when empty.
 const (
-	V1 = 1
-	V2 = 2
+	FieldArgv   = "argv"   // the command, a list
+	FieldChain  = "chain"  // the chain, leaf first, a list of peer records
+	FieldCut    = "cut"    // empty: command lines were left out of the chain
+	FieldCwd    = "cwd"    // where it runs
+	FieldDanger = "danger" // the danger lines, a list
+	FieldEnv    = "env"    // the variables outside the allowlist, a list
+	FieldRunAs  = "runas"  // as whom it runs
+	FieldUser   = "user"   // who runs it
 )
 
-// FlagCmdlinesCut is v2's flag that command lines were left out of the
-// chain to fit; any other bit is malformed.
-const FlagCmdlinesCut = 1
+var known = map[string]bool{
+	FieldArgv: true, FieldChain: true, FieldCut: true, FieldCwd: true,
+	FieldDanger: true, FieldEnv: true, FieldRunAs: true, FieldUser: true,
+}
 
-var (
-	prefix   = lengthPrefixed(Magic)
-	prefixV2 = lengthPrefixed(MagicV2)
-)
+var prefix = lengthPrefixed(Magic)
 
 func lengthPrefixed(s string) string {
 	return string(binary.BigEndian.AppendUint32(nil, uint32(len(s)))) + s
 }
 
 type Message struct {
-	// Version is V1, or zero for V1, or V2.
-	Version  int
 	Nonce    []byte
 	HostKeys [][]byte
 	User     string
 	RunAs    string
 	Cwd      string
 	Argv     []string
-
-	// Level and Reasons are v1's alone.
-	Level   string
-	Reasons []string
-
-	// Danger, Env, Truncated and Links are v2's alone: the danger lines,
-	// the variables outside the allowlist, whether command lines were left
-	// out of the chain to fit, and the chain, leaf first, at most
-	// peer.MaxLinks. A link's Sid and Cgroup are not carried.
-	Danger    []string
-	Env       []string
+	// Danger are the danger lines, Env the variables outside the
+	// allowlist.
+	Danger []string
+	Env    []string
+	// Truncated is whether command lines were left out of the chain to
+	// fit; Links is the chain, leaf first, at most peer.MaxLinks. A link's
+	// Sid and Cgroup are not carried.
 	Truncated bool
 	Links     []peer.Link
+	// Ignored names the unmarked fields Parse did not know and dropped.
+	// Marshal writes none.
+	Ignored []string
 }
 
 var (
@@ -76,17 +101,19 @@ var (
 	ErrTooLong   = fmt.Errorf("over the agent's limit of %d bytes", MaxSize)
 )
 
-// HasMagic is whether b starts with either version's length-prefixed
-// magic, as no userauth request or SSHSIG blob does.
+// CriticalError is a message with a field marked critical that this reader
+// does not know, which it must not ask without.
+type CriticalError struct{ Key string }
+
+func (e *CriticalError) Error() string {
+	return fmt.Sprintf("a quoin-sudo message with a critical field this signer does not know: %q", e.Key)
+}
+
+// HasMagic is whether b starts with the length-prefixed magic, as no
+// userauth request or SSHSIG blob does.
 func HasMagic(b []byte) bool {
-	return bytes.HasPrefix(b, []byte(prefix)) || bytes.HasPrefix(b, []byte(prefixV2))
+	return bytes.HasPrefix(b, []byte(prefix))
 }
-
-func validLevel(l string) bool {
-	return l == "" || l == "warning" || l == "danger"
-}
-
-func (m *Message) v2() bool { return m.Version == V2 }
 
 func (m *Message) Marshal() ([]byte, error) {
 	if len(m.Nonce) != NonceSize {
@@ -95,50 +122,41 @@ func (m *Message) Marshal() ([]byte, error) {
 	if len(m.HostKeys) == 0 {
 		return nil, errors.New("no host keys")
 	}
-	switch m.Version {
-	case 0, V1:
-		if m.Danger != nil || m.Env != nil || m.Truncated || m.Links != nil {
-			return nil, errors.New("v2's fields in a v1 message")
-		}
-		if !validLevel(m.Level) {
-			return nil, fmt.Errorf("level %q", m.Level)
-		}
-	case V2:
-		if m.Level != "" || m.Reasons != nil {
-			return nil, errors.New("v1's level or reasons in a v2 message")
-		}
-		if err := validLinks(m.Links); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, fmt.Errorf("version %d", m.Version)
+	if len(m.Argv) == 0 {
+		return nil, errors.New("no command")
 	}
+	if err := validLinks(m.Links); err != nil {
+		return nil, err
+	}
+	var f []byte
+	field := func(name string, v []byte) {
+		f = appendString(f, []byte(Critical+name))
+		f = appendString(f, v)
+	}
+	field(FieldArgv, appendList(nil, byteSlices(m.Argv)))
+	if len(m.Links) > 0 {
+		recs := make([][]byte, len(m.Links))
+		for i, l := range m.Links {
+			recs[i] = l.AppendRecord(nil)
+		}
+		field(FieldChain, appendList(nil, recs))
+	}
+	if m.Truncated {
+		field(FieldCut, nil)
+	}
+	field(FieldCwd, []byte(m.Cwd))
+	if len(m.Danger) > 0 {
+		field(FieldDanger, appendList(nil, byteSlices(m.Danger)))
+	}
+	if len(m.Env) > 0 {
+		field(FieldEnv, appendList(nil, byteSlices(m.Env)))
+	}
+	field(FieldRunAs, []byte(m.RunAs))
+	field(FieldUser, []byte(m.User))
 	b := []byte(prefix)
-	if m.v2() {
-		b = []byte(prefixV2)
-	}
 	b = appendString(b, m.Nonce)
 	b = appendList(b, m.HostKeys)
-	b = appendString(b, []byte(m.User))
-	b = appendString(b, []byte(m.RunAs))
-	b = appendString(b, []byte(m.Cwd))
-	b = appendList(b, byteSlices(m.Argv))
-	if m.v2() {
-		b = appendList(b, byteSlices(m.Danger))
-		b = appendList(b, byteSlices(m.Env))
-		var flags uint32
-		if m.Truncated {
-			flags |= FlagCmdlinesCut
-		}
-		b = binary.BigEndian.AppendUint32(b, flags)
-		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Links)))
-		for _, l := range m.Links {
-			b = appendString(b, l.AppendRecord(nil))
-		}
-	} else {
-		b = appendString(b, []byte(m.Level))
-		b = appendList(b, byteSlices(m.Reasons))
-	}
+	b = appendString(b, f)
 	if len(b) > MaxSize {
 		return nil, ErrTooLong
 	}
@@ -168,11 +186,10 @@ func validLinks(links []peer.Link) error {
 }
 
 // MarshalWithin is Marshal held to limit bytes, and never more than
-// MaxSize. A v2 message over it has its chain's command lines left out one
-// at a time, from the top of the chain down, each blanked in m and
-// Truncated set, until it fits; Argv, Danger and Env are never touched.
-// What still does not fit with every command line out is ErrTooLong, as
-// is a v1 message over limit.
+// MaxSize. A message over it has its chain's command lines left out one at
+// a time, from the top of the chain down, each blanked in m and Truncated
+// set, until it fits; Argv, Danger and Env are never touched. What still
+// does not fit with every command line out is ErrTooLong.
 func (m *Message) MarshalWithin(limit int) ([]byte, error) {
 	limit = min(limit, MaxSize)
 	i := len(m.Links) - 1
@@ -187,7 +204,7 @@ func (m *Message) MarshalWithin(limit int) ([]byte, error) {
 		for i >= 0 && len(m.Links[i].Cmdline) == 0 {
 			i--
 		}
-		if !m.v2() || i < 0 {
+		if i < 0 {
 			return nil, ErrTooLong
 		}
 		m.Links[i].Cmdline = nil
@@ -195,63 +212,27 @@ func (m *Message) MarshalWithin(limit int) ([]byte, error) {
 	}
 }
 
-// Parse reads b strictly, as v1 or v2 by its magic, and sets Version:
-// every field present, a nonce of exactly NonceSize bytes, at least one
-// host key and each a public key blob, nothing after the last field and no
-// more than MaxSize in all. A v1 level is a known one; a v2 flags word has
-// no unknown bit, and its chain at most peer.MaxLinks records, each read
-// as peer.ParseRecord reads it.
+// Parse reads b strictly: the magic, a nonce of exactly NonceSize bytes,
+// at least one host key and each a public key blob, then the fields, with
+// nothing after them and no more than MaxSize in all.
+//
+// The fields are at most MaxFields, each key at most MaxKey bytes, an
+// optional mark and then a name of lower case letters, digits and hyphens,
+// in strictly ascending order of name. A known field must be marked and
+// its value read as its kind, with nothing left over; argv, cwd, runas and
+// user must be there. An unknown field marked critical is a *CriticalError
+// naming it; one unmarked is dropped and named in Ignored.
 func Parse(b []byte) (*Message, error) {
-	if len(b) > MaxSize {
+	if len(b) > MaxSize || !HasMagic(b) {
 		return nil, errMalformed
 	}
-	m := &Message{}
-	switch {
-	case bytes.HasPrefix(b, []byte(prefix)):
-		m.Version, b = V1, b[len(prefix):]
-	case bytes.HasPrefix(b, []byte(prefixV2)):
-		m.Version, b = V2, b[len(prefixV2):]
-	default:
-		return nil, errMalformed
-	}
-	r := &reader{b: b}
-	m.Nonce = r.bytes()
-	m.HostKeys = r.list()
-	m.User = string(r.bytes())
-	m.RunAs = string(r.bytes())
-	m.Cwd = string(r.bytes())
-	m.Argv = r.strings()
-	if m.v2() {
-		m.Danger = r.strings()
-		m.Env = r.strings()
-		flags := r.uint32()
-		if flags&^FlagCmdlinesCut != 0 {
-			return nil, errMalformed
-		}
-		m.Truncated = flags&FlagCmdlinesCut != 0
-		n := r.uint32()
-		if n > peer.MaxLinks {
-			return nil, errMalformed
-		}
-		for i := uint32(0); i < n && r.err == nil; i++ {
-			rec := r.bytes()
-			if r.err != nil {
-				break
-			}
-			l, err := peer.ParseRecord(rec)
-			if err != nil {
-				return nil, fmt.Errorf("%w: a link: %v", errMalformed, err)
-			}
-			m.Links = append(m.Links, l)
-		}
-	} else {
-		m.Level = string(r.bytes())
-		m.Reasons = r.strings()
-	}
+	r := &reader{b: b[len(prefix):]}
+	m := &Message{Nonce: r.bytes(), HostKeys: r.list()}
+	f := r.bytes()
 	if r.err != nil || len(r.b) != 0 {
 		return nil, errMalformed
 	}
-	if len(m.Nonce) != NonceSize || len(m.HostKeys) == 0 || !validLevel(m.Level) {
+	if len(m.Nonce) != NonceSize || len(m.HostKeys) == 0 {
 		return nil, errMalformed
 	}
 	for _, k := range m.HostKeys {
@@ -259,7 +240,110 @@ func Parse(b []byte) (*Message, error) {
 			return nil, fmt.Errorf("%w: a host key: %v", errMalformed, err)
 		}
 	}
+	if err := m.readFields(f); err != nil {
+		return nil, err
+	}
 	return m, nil
+}
+
+func (m *Message) readFields(f []byte) error {
+	r := &reader{b: f}
+	seen := map[string]bool{}
+	var last string
+	var critical *CriticalError
+	for n := 0; len(r.b) > 0; n++ {
+		key, value := string(r.bytes()), r.bytes()
+		if r.err != nil || n == MaxFields {
+			return errMalformed
+		}
+		name, marked := strings.CutPrefix(key, Critical)
+		if !validName(name) || len(key) > MaxKey || (n > 0 && name <= last) {
+			return fmt.Errorf("%w: field %q", errMalformed, key)
+		}
+		last = name
+		if !known[name] {
+			if !marked {
+				m.Ignored = append(m.Ignored, name)
+			} else if critical == nil {
+				critical = &CriticalError{Key: name}
+			}
+			continue
+		}
+		if !marked {
+			return fmt.Errorf("%w: field %q is critical", errMalformed, name)
+		}
+		seen[name] = true
+		if err := m.setField(name, value); err != nil {
+			return fmt.Errorf("%w: field %q", errMalformed, name)
+		}
+	}
+	if critical != nil {
+		return critical
+	}
+	for _, name := range []string{FieldArgv, FieldCwd, FieldRunAs, FieldUser} {
+		if !seen[name] {
+			return fmt.Errorf("%w: no field %q", errMalformed, name)
+		}
+	}
+	return nil
+}
+
+func validName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if !('a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// setField reads a known field's value into m: a list with at least one
+// entry for argv, chain, danger and env, nothing for cut, any bytes for
+// the rest.
+func (m *Message) setField(name string, value []byte) error {
+	r := &reader{b: value}
+	switch name {
+	case FieldArgv, FieldDanger, FieldEnv:
+		l := r.strings()
+		if len(l) == 0 {
+			return errMalformed
+		}
+		switch name {
+		case FieldArgv:
+			m.Argv = l
+		case FieldDanger:
+			m.Danger = l
+		default:
+			m.Env = l
+		}
+	case FieldChain:
+		recs := r.list()
+		if r.err != nil || len(recs) == 0 || len(recs) > peer.MaxLinks {
+			return errMalformed
+		}
+		for _, rec := range recs {
+			l, err := peer.ParseRecord(rec)
+			if err != nil {
+				return err
+			}
+			m.Links = append(m.Links, l)
+		}
+	case FieldCut:
+		m.Truncated = true
+	case FieldCwd:
+		m.Cwd, r.b = string(value), nil
+	case FieldRunAs:
+		m.RunAs, r.b = string(value), nil
+	case FieldUser:
+		m.User, r.b = string(value), nil
+	}
+	if r.err != nil || len(r.b) != 0 {
+		return errMalformed
+	}
+	return nil
 }
 
 func byteSlices(ss []string) [][]byte {

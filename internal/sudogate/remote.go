@@ -138,7 +138,7 @@ func (s *session) recordRemote(c *challenge, outcome, source, keyFP string, extr
 	attrs := []any{
 		"remote", true, "chain", c.a.r.Chain, "pid", s.peer.Pid,
 		"nonce", hex.EncodeToString(m.Nonce), "host_keys", hosts, "user", m.User, "runas", m.RunAs,
-		"cwd", m.Cwd, "argv", m.Argv, "version", m.Version, "level", c.a.level(), "danger", m.Danger, "env", m.Env,
+		"cwd", m.Cwd, "argv", m.Argv, "level", c.a.level(), "danger", m.Danger, "env", m.Env,
 		"cmdlines_left_out", m.Truncated, "truncated", c.a.truncated,
 		"key", keyFP, "outcome", outcome, "source", source,
 	}

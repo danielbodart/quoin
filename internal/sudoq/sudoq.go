@@ -5,9 +5,8 @@
 // of the asking machine only on lines of its own, each "from here: ".
 //
 // The gate asks a local sudo with Question. In remote mode it sends
-// Message, quoin-sudo-v2, for the forwarded agent to sign, and the signer
-// reads it back with FromMessage and asks with Question too. A v1 message,
-// from a gate that does not send v2 yet, is asked with Legacy.
+// Message, a sudomsg.Message, for the forwarded agent to sign, and the
+// signer reads it back with FromMessage and asks with Question too.
 package sudoq
 
 import (
@@ -155,65 +154,26 @@ func shortVar(e string) string {
 	return e
 }
 
-// Message is s as quoin-sudo-v2, for nonce and the host's keys. Its links
+// Message is s as a sudomsg.Message, for nonce and the host's keys. Its links
 // are a copy of s's chain, which MarshalWithin may blank.
 func Message(s Subject, nonce []byte, hosts [][]byte) *sudomsg.Message {
 	return &sudomsg.Message{
-		Version: sudomsg.V2, Nonce: nonce, HostKeys: hosts,
+		Nonce: nonce, HostKeys: hosts,
 		User: s.User, RunAs: s.RunAs, Cwd: s.Cwd, Argv: s.Argv,
 		Danger: s.Danger, Env: s.Env, Truncated: s.Truncated,
 		Links: slices.Clone(chainOf(s).Chain),
 	}
 }
 
-// FromMessage is the Subject a v2 message carries, its chain resolved once
-// from its links. A v1 message, or one with no command, is an error.
+// FromMessage is the Subject a message carries, its chain resolved once
+// from its links. One with no command is an error.
 func FromMessage(m *sudomsg.Message) (Subject, error) {
-	if m.Version != sudomsg.V2 {
-		return Subject{}, fmt.Errorf("a quoin-sudo-v%d message, not v2", max(m.Version, sudomsg.V1))
-	}
 	if len(m.Argv) == 0 {
-		return Subject{}, errors.New("a quoin-sudo-v2 message with no command")
+		return Subject{}, errors.New("a quoin-sudo message with no command")
 	}
 	return Subject{
 		Argv: m.Argv, User: m.User, RunAs: m.RunAs, Cwd: m.Cwd,
 		Danger: m.Danger, Env: m.Env, Truncated: m.Truncated,
 		Chain: peer.FromLinks(m.Links),
 	}, nil
-}
-
-// Legacy is a v1 message asked as signers asked it before v2: its reasons,
-// the asking chain's warnings, the command and who runs it, the asking
-// chain as the table, titled "sudo on <host>", at the message's level or
-// the asking chain's. Kept until every gate sends v2.
-func Legacy(m *sudomsg.Message, o Options) galleyask.Question {
-	here := o.Here
-	if here == nil {
-		here = &peer.Requester{Cut: true}
-	}
-	lines := slices.Clone(o.Lead)
-	for _, r := range m.Reasons {
-		lines = append(lines, galleyask.Clean(r))
-	}
-	if len(m.Reasons) > 0 {
-		lines = append(lines, "")
-	}
-	if w := galleyask.Warnings(here); len(w) > 0 {
-		lines = append(lines, w...)
-		lines = append(lines, "")
-	}
-	lines = append(lines, galleyask.Command(m.Argv, galleyask.Width)...)
-	lines = append(lines, fmt.Sprintf("%s as %s in %s", galleyask.Clean(m.User), galleyask.Clean(m.RunAs), galleyask.Clean(m.Cwd)))
-	lines = append(lines, o.Footer...)
-	level := m.Level
-	if level == "" {
-		level = "normal"
-		if here.Cut || here.SessionRoot {
-			level = "warning"
-		}
-	}
-	return galleyask.Question{
-		Title: "sudo on " + galleyask.Clean(o.Host), Text: strings.Join(lines, "\n"), Level: level,
-		Allow: "Allow", Chain: galleyask.Chain(here),
-	}
 }

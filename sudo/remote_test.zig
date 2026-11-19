@@ -148,7 +148,10 @@ const Peer = struct {
 
     fn serve(p: *Peer) void {
         const conn = std.posix.accept(p.listener, null, null, std.posix.SOCK.CLOEXEC) catch return;
-        defer std.posix.close(conn);
+        // The agent's end stays open, only shut for sending, until stop,
+        // so the gate's end can see whether the plugin has closed its own.
+        if (p.header == .agent) agent_fd.store(conn, .release);
+        defer if (p.header == .agent) std.posix.shutdown(conn, .send) catch {} else std.posix.close(conn);
         if (p.header == .stream) {
             for (p.replies) |r| _ = std.posix.write(conn, r) catch return;
             std.posix.shutdown(conn, .send) catch return;
@@ -163,6 +166,7 @@ const Peer = struct {
             const len = std.mem.readInt(u32, h[hl - 4 ..][0..4], .big);
             if (len > p.bodies[i].len or readFull(conn, p.bodies[i][0..len]) != len) return;
             p.kinds[i] = if (p.header == .gate) h[5] else p.bodies[i][0];
+            if (p.header == .gate and p.kinds[i] == 'S') agent_closed_by_s = agentClosed();
             p.lens[i] = len;
             p.n = i + 1;
             _ = std.posix.write(conn, r) catch return;
@@ -178,10 +182,30 @@ const Peer = struct {
 
     fn stop(p: *Peer) void {
         p.thread.join();
+        if (p.header == .agent) {
+            const conn = agent_fd.swap(-1, .acq_rel);
+            if (conn >= 0) std.posix.close(conn);
+        }
         std.posix.close(p.listener);
         std.posix.unlink(p.path) catch {};
     }
 };
+
+/// The agent's end of the plugin's connection, and whether the plugin had
+/// closed its end by the time the gate read its 'S'.
+var agent_fd = std.atomic.Value(i32).init(-1);
+var agent_closed_by_s: ?bool = null;
+
+/// Whether the plugin has closed its end of the agent connection: the
+/// agent's end reads EOF at once. Nothing is left unread on it, so a
+/// connection the plugin still holds would block.
+fn agentClosed() bool {
+    const conn = agent_fd.load(.acquire);
+    if (conn < 0) return false;
+    var b: [1]u8 = undefined;
+    const n = std.posix.recv(conn, &b, std.posix.MSG.PEEK | std.posix.MSG.DONTWAIT) catch return false;
+    return n == 0;
+}
 
 const Wire = struct {
     buf: [4096]u8 = undefined,
@@ -299,6 +323,7 @@ fn run(gate_replies: []const []const u8, agent_replies: ?[]const []const u8, gro
     const opts = [_:null]?[*:0]const u8{ m.option, "remote" };
     const envp = [_:null]?[*:0]const u8{ "HOME=/", z(5, "SSH_AUTH_SOCK={s}", .{path}) };
     said_n = 0;
+    agent_closed_by_s = null;
     try testing.expectEqual(@as(c_int, 1), open(arr(&ui), arr(&opts), arr(&envp)));
     var errstr: [*c]const u8 = null;
     const rc = accept(&errstr);
@@ -308,7 +333,7 @@ fn run(gate_replies: []const []const u8, agent_replies: ?[]const []const u8, gro
     return .{ .rc = rc, .gate = &gate_peer, .agent = with_agent, .errstr = errstr };
 }
 
-test "a remote sudo checks in with 'm', the first listed identity signs the gate's message, and it is allowed with sudo's ids as they were" {
+test "a remote sudo checks in with 'm', the first listed identity signs the gate's message on a connection closed before the 'S', and it is allowed with sudo's ids as they were" {
     var fds_buf: [64]i32 = undefined;
     const fds = try openFds(&fds_buf);
     const before = Ids.now();
@@ -334,6 +359,7 @@ test "a remote sudo checks in with 'm', the first listed identity signs the gate
     want.string(message);
     want.int(0);
     try testing.expectEqualSlices(u8, want.out(), a.body(1));
+    try testing.expectEqual(@as(?bool, true), agent_closed_by_s);
     try testing.expectEqual(@as(usize, 0), said_n);
     try Ids.now().expectEqual(before);
     var after_buf: [64]i32 = undefined;

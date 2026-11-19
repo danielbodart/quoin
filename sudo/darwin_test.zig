@@ -154,6 +154,9 @@ const Agent = struct {
     thread: std.Thread = undefined,
     message: [8192]u8 = undefined,
     message_len: usize = 0,
+    /// The agent's end, kept open and only shut for sending, so the test
+    /// can see whether accept closed the plugin's end.
+    conn: std.atomic.Value(i32) = .init(-1),
 
     fn start(a: *Agent) !void {
         a.thread = try std.Thread.spawn(.{}, serve, .{a});
@@ -176,7 +179,8 @@ const Agent = struct {
 
     fn serve(a: *Agent) void {
         const conn = std.posix.accept(a.listener, null, null, 0) catch return;
-        defer std.posix.close(conn);
+        a.conn.store(conn, .release);
+        defer std.posix.shutdown(conn, .send) catch {};
         var buf: [16384]u8 = undefined;
         _ = frame(conn, &buf) orelse return;
         var ids: [256]u8 = undefined;
@@ -278,8 +282,9 @@ fn lastRecord(buf: []u8) ![]const u8 {
 }
 
 /// One armed sudo against an agent answering `answer`: accept's result,
+/// whether accept had closed the agent connection by the time it returned,
 /// what sudo was told and the decision record.
-fn armedSudo(answer: Answer) !struct { accepted: c_int, agent: *Agent } {
+fn armedSudo(answer: Answer) !struct { accepted: c_int, agent: *Agent, closed_by_accept: bool } {
     const m = try me();
     const l = try listen();
     const a = try testing.allocator.create(Agent);
@@ -289,42 +294,52 @@ fn armedSudo(answer: Answer) !struct { accepted: c_int, agent: *Agent } {
     try testing.expectEqual(@as(c_int, 1), open(m, .{}));
     try testing.expectEqual(@as(c_int, 1), plugin.quoin_sudo_armed());
     const got = accept();
-    close();
     a.thread.join();
+    var closed_by_accept = false;
+    const conn = a.conn.load(.acquire);
+    if (conn >= 0) {
+        var b: [1]u8 = undefined;
+        closed_by_accept = (std.posix.recv(conn, &b, std.posix.MSG.PEEK | std.posix.MSG.DONTWAIT) catch 1) == 0;
+        std.posix.close(conn);
+    }
+    close();
     std.posix.close(l);
     std.posix.unlink(agent_name) catch {};
-    return .{ .accepted = got, .agent = a };
+    return .{ .accepted = got, .agent = a, .closed_by_accept = closed_by_accept };
 }
 
-test "a good signature from a listed key approves, over the v2 message Go's gate would have built, the chain above sudo in it" {
+test "a good signature from a listed key approves, over the message Go's gate would have built, the chain above sudo in it" {
     try fixture();
     const r = try armedSudo(.sign);
     defer testing.allocator.destroy(r.agent);
     try testing.expectEqual(@as(c_int, 1), r.accepted);
+    try testing.expect(r.closed_by_accept);
     try testing.expectEqual(@as(c_int, 0), plugin.quoin_sudo_armed());
     const msg = r.agent.message[0..r.agent.message_len];
     var rd: agent.Reader = .{ .b = msg };
-    try testing.expectEqualStrings(sudomsg.magic_v2, rd.string().?);
+    try testing.expectEqualStrings(sudomsg.magic, rd.string().?);
     try testing.expectEqual(@as(usize, 32), rd.string().?.len);
     try testing.expectEqual(@as(u32, 2), rd.int().?);
     var first: agent.Reader = .{ .b = rd.string().? };
     try testing.expectEqualStrings("ecdsa-sha2-nistp256", first.string().?);
     var second: agent.Reader = .{ .b = rd.string().? };
     try testing.expectEqualStrings("ssh-ed25519", second.string().?);
-    var u: [32]u8 = undefined;
-    try testing.expectEqualStrings(try std.fmt.bufPrint(&u, "tester{d}", .{c.getuid()}), rd.string().?);
-    try testing.expectEqualStrings("root", rd.string().?);
-    try testing.expectEqualStrings("/the/cwd", rd.string().?);
-    try testing.expectEqual(@as(u32, 2), rd.int().?);
-    try testing.expectEqualStrings("/usr/bin/id", rd.string().?);
-    try testing.expectEqualStrings("-un", rd.string().?);
-    try testing.expectEqual(@as(u32, 0), rd.int().?); // danger: the Mac has no catalogue
-    try testing.expectEqual(@as(u32, 0), rd.int().?); // env
-    try testing.expectEqual(@as(u32, 0), rd.int().?); // flags: nothing left out
-    const n = rd.int().?;
+    var f: agent.Reader = .{ .b = rd.string().? };
+    try testing.expect(rd.done());
+    // The fields in name order; the Mac has no danger catalogue, so no
+    // danger or env, and nothing left out, so no cut.
+    try testing.expectEqualStrings("!argv", f.string().?);
+    var argv: agent.Reader = .{ .b = f.string().? };
+    try testing.expectEqual(@as(u32, 2), argv.int().?);
+    try testing.expectEqualStrings("/usr/bin/id", argv.string().?);
+    try testing.expectEqualStrings("-un", argv.string().?);
+    try testing.expect(argv.done());
+    try testing.expectEqualStrings("!chain", f.string().?);
+    var ch: agent.Reader = .{ .b = f.string().? };
+    const n = ch.int().?;
     try testing.expect(n >= 1 and n <= sudomsg.max_links);
     for (0..n) |i| {
-        var link: agent.Reader = .{ .b = rd.string().? };
+        var link: agent.Reader = .{ .b = ch.string().? };
         const pid = std.mem.readInt(u32, link.b[0..4], .big);
         if (i == 0) try testing.expectEqual(@as(u32, @intCast(c.getppid())), pid);
         if (i == 0) try testing.expectEqual(@as(u32, @intCast(c.getuid())), std.mem.readInt(u32, link.b[16..20], .big));
@@ -334,7 +349,15 @@ test "a good signature from a listed key approves, over the v2 message Go's gate
         try testing.expectEqual(link.b.len, 26 + comm_len + 2 + cmdline_len);
         if (i == 0) try testing.expect(cmdline_len > 0);
     }
-    try testing.expect(rd.done());
+    try testing.expect(ch.done());
+    try testing.expectEqualStrings("!cwd", f.string().?);
+    try testing.expectEqualStrings("/the/cwd", f.string().?);
+    try testing.expectEqualStrings("!runas", f.string().?);
+    try testing.expectEqualStrings("root", f.string().?);
+    try testing.expectEqualStrings("!user", f.string().?);
+    var u: [32]u8 = undefined;
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&u, "tester{d}", .{c.getuid()}), f.string().?);
+    try testing.expect(f.done());
     var lb: [8192]u8 = undefined;
     const rec = try lastRecord(&lb);
     try testing.expect(std.mem.indexOf(u8, rec, " chain=[\"") != null);

@@ -172,7 +172,6 @@ func TestTheMessageNamesEveryHostKeyAndTheResolvedCommand(t *testing.T) {
 	c.send(approval(cmd))
 	r := c.readMessage()
 	want := &sudomsg.Message{
-		Version:  sudomsg.V2,
 		Nonce:    r.msg.Nonce,
 		HostKeys: [][]byte{hosts[0].Marshal(), hosts[1].Marshal()},
 		User:     "dan", RunAs: "root", Cwd: "/home/dan/src",
@@ -239,7 +238,7 @@ func TestASignatureFromAListedKeyIsYes(t *testing.T) {
 	c.want(replyYes, "")
 	log := h.log.String()
 	for _, want := range []string{`"outcome":"allow"`, `"key":"` + ssh.FingerprintSHA256(k.PublicKey()) + `"`, `"runas":"root"`, `"cwd":"/home/dan/src"`,
-		`"version":2`, `"level":"normal"`, `"cmdlines_left_out":false`, `"chain":[{"Pid":401`} {
+		`"level":"normal"`, `"cmdlines_left_out":false`, `"chain":[{"Pid":401`} {
 		if !strings.Contains(log, want) {
 			t.Errorf("the journal lacks %s:\n%s", want, log)
 		}
@@ -395,12 +394,25 @@ func TestARemoteMessageWhoseSignRequestIsOverTheAgentLimitIsRefused(t *testing.T
 	for _, l := range sshd() {
 		cmdlines += len(strings.Join(l.Cmdline, "\x00"))
 	}
-	top := len(strings.Join(sshd()[3].Cmdline, "\x00"))
+	// Leaving any out adds the cut field, its key and empty value, so k
+	// left out from the top save saved[k] bytes.
+	cut := 4 + len("!cut") + 4
+	saved := []int{0}
+	for i := len(sshd()) - 1; i >= 0; i-- {
+		saved = append(saved, saved[len(saved)-1]+len(strings.Join(sshd()[i].Cmdline, "\x00")))
+	}
+	for k := 1; k < len(saved); k++ {
+		saved[k] -= cut
+	}
+	if saved[1] >= 1 || saved[2] < 1 || cmdlines-cut != saved[4] {
+		t.Fatalf("the chain no longer makes the cases below: %v", saved)
+	}
 	for _, tc := range []struct {
 		n       int
 		fits    bool
 		leftOut int
-	}{{room, true, 0}, {room + 1, true, 1}, {room + top, true, 1}, {room + top + 1, true, 2}, {room + cmdlines, true, 4}, {room + cmdlines + 1, false, 0}} {
+	}{{room, true, 0}, {room + 1, true, 2}, {room + saved[2], true, 2}, {room + saved[2] + 1, true, 3},
+		{room + saved[3] + 1, true, 4}, {room + saved[4], true, 4}, {room + saved[4] + 1, false, 0}} {
 		c := h.remoteSudo(501)
 		cmd := remoteCmd("foo")
 		cmd.argv = append(cmd.argv, strings.Repeat("x", tc.n))

@@ -301,7 +301,7 @@ in
         assert "/run/current-system/sw/bin/id -u" in lines, lines
         assert "dan as root in /home/dan" in lines, lines
         s = [d for d in signs()[signed:] if d["class"] == "remote sudo"]
-        assert len(s) == 1 and s[0]["version"] == 2 and s[0]["remote_chain"], signs()[signed:]
+        assert len(s) == 1 and s[0]["remote_chain"], signs()[signed:]
         assert [l["Pid"] for l in s[0]["remote_chain"]][-1] == 1, s[0]
         assert events(server, "question") == []
         allowed = [d for d in gate()[gated:] if d.get("outcome") == "allow"]
@@ -323,7 +323,7 @@ in
         assert rc == 0, repr((rc, out))
         q = events(client, "question")[asked]
         d = gate()[-1]
-        assert q["level"] == "danger" and d["level"] == "danger" and d["danger"] and d["version"] == 2, (q, d)
+        assert q["level"] == "danger" and d["level"] == "danger" and d["danger"] and "version" not in d, (q, d)
         assert q["text"].split("\n")[0] == d["danger"][0], (q, d)
         server.fail("systemctl is-active quoin-spare.service")
         server.succeed("systemctl start quoin-spare.service")

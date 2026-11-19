@@ -277,9 +277,12 @@ fn remoteAnswer(s: fd.Sock, errstr: [*c][*c]const u8) c_int {
     return answer(readReply(s, .yes_no) catch return noAnswer(errstr));
 }
 
-/// The 'S' for `m`, signed on the connection open made. error.Drop when
+/// The 'S' for `m`, signed on the connection open made, which is closed
+/// as soon as the agent answers, so a command sudo runs after does not
+/// hold a forwarded channel, or ssh, open until it exits. error.Drop when
 /// open's drop or restore failed.
 fn agentStep(m: wire.Signing) error{Drop}![]u8 {
+    defer closeAgent();
     if (drop_failed) return error.Drop;
     const s = agent_conn orelse return wire.signFailed(&signature_request, "cannot connect to the forwarded agent");
     return switch (agent.sign(s, m.keys, m.message, &agent_buf)) {

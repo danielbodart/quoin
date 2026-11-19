@@ -249,7 +249,9 @@ user cannot). It is a forwarder when it runs as the invoking user and its
 program is `sshd-session` (`sshd` before OpenSSH 9.8) or mosey (`mosey` or
 nixpkgs' `.mosey-wrapped`, wherever it lives, `~/.local/bin` included).
 The connection is kept and the signature asked on it, so the sudo opens
-one forwarded channel, not two. This is who serves the agent, not what the
+one forwarded channel, not two, and closed as soon as the agent answers,
+so the command sudo runs after (`sudo -b`, a long job) holds no channel,
+nor `ssh`, open. This is who serves the agent, not what the
 chain looks like, so a sudo reparented away from its login (`setsid`,
 tmux) or run under mosey, whose spawner is no `sshd-session`, is remote
 all the same. The connect never waits: a listener with a full backlog is
@@ -257,10 +259,10 @@ no agent. A Mac asks the same question with its own calls
 ([macOS](#macos)).
 
 The gate classifies the command as for a local sudo and hands the plugin a
-message to sign, `quoin-sudo-v2`: a nonce, the host's keys, the user, the
-runas user, the cwd, the resolved command, the danger lines, the
-variables outside the allowlist, and the sudo's process chain as the
-plugin read it as root, up to 16 links. A message over the agent's limit
+message to sign, `quoin-sudo-v1`: a nonce, the host's keys, then named
+fields -- the user, the runas user, the cwd, the resolved command, the
+danger lines, the variables outside the allowlist, and the sudo's process
+chain as the plugin read it as root, up to 16 links. A message over the agent's limit
 has the chain's command lines left out from the top of the chain down
 until it fits, and says so; the command, danger lines and variables are
 never cut, and what still does not fit is refused, "command too long for
@@ -272,21 +274,32 @@ refuses unless its forwarded session is bound to one of the message's host
 keys; no grant or window skips it. A stock agent holding a listed key
 signs without asking.
 
-quoin-signer reads two messages. `quoin-sudo-v2` carries what the
-question is made of, the danger lines, the variables and the host's own
-process chain, and is asked as the host would ask that sudo locally, by
-the same builder (`internal/sudoq`): the host's chain is the table, the
-title ends "on <host>", and the chain of the ssh on this machine is shown
-only on lines of its own, each `from here: `, whose warnings raise a
-normal question to a warning. `quoin-sudo-v1`, a level and its reasons,
-is asked as before, with this machine's chain as the table. A v2 message
-that does not read strictly, or names no command, is refused unasked.
+quoin-signer asks it as the host would ask that sudo locally, by the same
+builder (`internal/sudoq`): the host's chain is the table, the title ends
+"on <host>", and the chain of the ssh on this machine is shown only on
+lines of its own, each `from here: `, whose warnings raise a normal
+question to a warning. A message that does not read strictly is refused
+unasked.
 
-**Upgrade order.** A signer older than v2 refuses a v2 message, so the
-machines you ssh *from* (the laptops, with quoin-signer) take the new
-quoin before any host does: a Linux host's gate and a Mac's plugin both
-send v2 as soon as they are updated. A new signer still reads v1, so
-hosts can follow at their own pace.
+**Fields, not versions.** The message grows by adding fields, never by a
+new magic. A field's key is marked critical with a `!`; a signer that
+meets a critical field it does not know refuses the sudo unasked, naming
+it, and one that meets an unmarked field it does not know drops it, the
+journal naming it in `fields_ignored`. Every field today is critical,
+since each is part of what is approved. A field may go unmarked only when
+a signer could leave it unshown without changing what is approved -- a
+hint, say, or something that only adds to the picture -- and never when
+anything else is left out or relaxed because it is there. That is no
+downgrade: the gate alone writes the message and checks the signature
+over its own bytes, so nothing between can strip a field, and an older
+signer asks what it always asked.
+
+**Upgrading from the first layout.** Before the fields, the message was
+the user, runas, cwd and command, a level and its reasons. A signer from
+then reads today's message as that layout, finds it malformed and
+refuses; a signer now refuses a message from a gate of then. Neither asks
+anything else, so a remote sudo between a host and a laptop on either
+side of this change is refused until both are updated, in either order.
 
 A sudo with a tty (`ssh -t`) asks the host's own password, as stock. No
 forwarded agent, no `remoteKeys`, or the gate down is stock too: "a
@@ -327,7 +340,7 @@ own process. It is the Linux plugin and gate, step for step:
   `LOCAL_PEERPID`, and reads its program as root with `proc_pidpath`; a
   forwarder is the user's own `sshd-session`, `sshd` or mosey, wherever
   it lives. So a sudo under mosey, or reparented away from its login, is
-  remote on a Mac too. The connection is kept for the signature, and the
+  remote on a Mac too. The connection is kept for the signature, closed as soon as the agent answers, and the
   connect never waits. A drop to the user or a restore that fails
   refuses the sudo.
 - **PAM**: `quoin_sudo_pam.so`, `sufficient`, first in `sudo_local` (macOS
@@ -335,7 +348,7 @@ own process. It is the Linux plugin and gate, step for step:
   gate whether its sudo checked in, it asks the plugin in the same sudo
   whether it armed. A plugin that is not loaded or not armed is the
   password.
-- **accept** builds `quoin-sudo-v2` from sudoers' `command_info` and the
+- **accept** builds the `quoin-sudo-v1` message from sudoers' `command_info` and the
   chain above sudo, byte for byte as `internal/sudomsg`
   (`sudo/sudomsg.zig`, held to the Go golden), cut to fit as the gate cuts
   it, has the forwarded agent sign it on open's connection, and verifies
@@ -393,17 +406,17 @@ argv, danger reasons, environment lines, the outcome, and its `source`
 (`galley`, `window`, `verified`, `wrong password`, `cancelled`, `nobody`,
 `not the pinned galley`, `hung up`, `host rule`, `project rule`). A password appears only as its length.
 A remote sudo's records have `remote` set, the message's fields (`user`,
-`runas`, `cwd`, `argv`, `danger`, `env`), its `version`, the `level` the
+`runas`, `cwd`, `argv`, `danger`, `env`), the `level` the
 gate gave it, `cmdlines_left_out` when the chain's command lines were cut
 to fit, `truncated` when the plugin's request to the gate was, the host
 key fingerprints as `host_keys`, the `nonce`, and the `key` that signed.
 
 quoin-signer's record of a remote sudo (`journalctl -u quoin-signer`,
-[signer.md](signer.md)) has the message's `version`, `user`, `runas`, `cwd`,
-`argv` and `nonce`. For v2 it adds `danger`, `env`, the `level` it asked
-at, the host's chain as `remote_chain`, command lines and all, beside this
-machine's `chain`, `remote_cut` when the host's chain was cut short, and
-`cmdlines_left_out`; for v1, the message's `level` and `reasons`.
+[signer.md](signer.md)) has the message's `user`, `runas`, `cwd`, `argv`,
+`nonce`, `danger` and `env`, the `level` it asked at, the host's chain as
+`remote_chain`, command lines and all, beside this machine's `chain`,
+`remote_cut` when the host's chain was cut short, `cmdlines_left_out`,
+and `fields_ignored`, the unmarked fields it did not know.
 
 ## Environment
 
