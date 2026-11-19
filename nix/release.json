@@ -1,0 +1,57 @@
+{
+  "version": "0.117.31",
+  "assets": {
+    "x86_64-linux": {
+      "quoin": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-0.117.31-linux-amd64",
+        "hash": "sha256-/dvyTxhJBSllCRb5uYEnG8+okzQ/h7GhPO5dMkZpmiY="
+      },
+      "quoin-signer": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-signer-0.117.31-linux-amd64",
+        "hash": "sha256-75k12Sachgvgj+MHED0Q28ae0Q7DhNm/IH7zYwX4JMU="
+      },
+      "quoin-sudo": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-sudo-0.117.31-linux-amd64",
+        "hash": "sha256-tTrZAq/x6eUQUQqbEDnUb7JF1BIl29ZbMicRTuMWFOg="
+      },
+      "quoin-courier": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-courier-0.117.31-linux-amd64",
+        "hash": "sha256-m2SeTmVJ5p4PWX/CKzG3YXUNFa3zZlR8P95WTB9j1jU="
+      },
+      "fakegalley": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/fakegalley-0.117.31-linux-amd64",
+        "hash": "sha256-d4f15HSJ1zr9dvdgR69YxhIOSO7fk3bn8xqhjzEHUuY="
+      },
+      "agenttamper": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/agenttamper-0.117.31-linux-amd64",
+        "hash": "sha256-iu6qsC31zjLf09TqkloWDVh/Mj2HKUXRD0JvHQQbB+w="
+      }
+    },
+    "aarch64-linux": {
+      "quoin": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-0.117.31-linux-arm64",
+        "hash": "sha256-M7Buj2WkziFBnFEEI85BTMHyLQe8McYfs5WT8qH0PGc="
+      },
+      "quoin-signer": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-signer-0.117.31-linux-arm64",
+        "hash": "sha256-Ua7Mu1FRjZybhGU+a0iyQkEFqSN1rxuO8Tm7+xSC+F8="
+      },
+      "quoin-sudo": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-sudo-0.117.31-linux-arm64",
+        "hash": "sha256-I9gjUDK+bjEOhMuAFD22ulp77Td2etGzzPdNva3hB1g="
+      },
+      "quoin-courier": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/quoin-courier-0.117.31-linux-arm64",
+        "hash": "sha256-I7Te0+mqEENN64v0OicRIlwvMXPmqYcQzm2ioj0MfIk="
+      },
+      "fakegalley": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/fakegalley-0.117.31-linux-arm64",
+        "hash": "sha256-KuZqGS1n/U/Ct7VoG/gbIxsrv2KrC5Sz8APajsDcgwo="
+      },
+      "agenttamper": {
+        "url": "https://github.com/danielbodart/quoin/releases/download/v0.117.31/agenttamper-0.117.31-linux-arm64",
+        "hash": "sha256-dsazu+22lrWO0w4c08ns5HA8/G03y6yN8As/bgj3v2o="
+      }
+    }
+  }
+}
