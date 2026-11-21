@@ -9,8 +9,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/danielbodart/quoin/courier"
+	"github.com/danielbodart/quoin/internal/sudomsg"
 	"github.com/danielbodart/quoin/peer"
 	"github.com/danielbodart/quoin/projpolicy"
 	"github.com/danielbodart/quoin/sudo"
@@ -187,22 +189,62 @@ func TestARuleNeverDecidesDangerAWarningOrWhatItCannotRead(t *testing.T) {
 	}
 }
 
-func TestRemoteModeIsNoRulesBusiness(t *testing.T) {
-	h := withRules(t, map[string]sudo.Rule{bin + "id **": {Answer: sudo.Refuse}})
-	cmd := run("id", "-u")
-	cmd.remote = true
-	c := h.dial(peer.Proc{UID: 0, Pid: 500, Start: 5000, PPid: 200})
-	c.send(append(frame(kindCheckIn), nil...))
-	c.read()
-	c.send(approval(cmd))
-	if k, m := c.read(); k == replyNo && strings.Contains(m, "rule") {
-		t.Errorf("a remote sudo was decided by a rule: %q", m)
+// A remote sudo is decided by the rules as a local one is: an allow or a
+// refuse asks no one, the plugin never reaching the agent, and an ask is a
+// question with no presence check that names its rule.
+func TestARemoteSudoIsDecidedByTheRulesAsALocalOneIs(t *testing.T) {
+	h := withRules(t, map[string]sudo.Rule{
+		bin + "id **":               {Answer: sudo.Allow},
+		bin + "reboot **":           {Answer: sudo.Refuse},
+		bin + "systemctl restart *": {Answer: sudo.Ask},
+		bin + "systemctl stop **":   {Answer: sudo.Allow},
+		bin + "systemctl reload **": {Answer: sudo.Ask},
+	})
+	k := agentKey(t)
+	h.remote(k)
+	remote := func(argv ...string) sudoCmd {
+		cmd := run(argv...)
+		cmd.remote = true
+		return cmd
 	}
-	for _, d := range h.decisions() {
-		if d["source"] == "host rule" {
-			t.Errorf("%v", d)
-		}
+	c := h.remoteSudo(500)
+	c.send(approval(remote("id", "-u")))
+	c.want(replyYes, "")
+	if d := h.last(); d["outcome"] != "allow" || d["source"] != "host rule" || d["remote"] != true {
+		t.Errorf("%v", d)
 	}
+	c = h.remoteSudo(501)
+	c.send(approval(remote("reboot")))
+	c.want(replyNo, "refused by the host rule "+bin+"reboot **")
+
+	c = h.remoteSudo(502)
+	c.send(approval(remote("systemctl", "restart", "foo")))
+	r := c.readMessage()
+	want := sudomsg.Rule{Pattern: bin + "systemctl restart *", Source: "host rule"}
+	if m := r.msg; m.Decision != sudomsg.Question || m.Presence != sudomsg.PresenceNone || m.Window != 0 || m.Rule == nil || *m.Rule != want {
+		t.Fatalf("%+v", m)
+	}
+	c.send(answer(t, k, r.raw, sudomsg.Answer{Decision: sudomsg.Allow, Presence: sudomsg.PresenceNone}))
+	c.want(replyYes, "")
+	if d := h.last(); d["rule_source"] != "host rule" || d["rule"] != bin+"systemctl restart *" {
+		t.Errorf("%v", d)
+	}
+
+	// Danger is never a rule's, remote or local.
+	c = h.remoteSudo(503)
+	c.send(approval(remote("systemctl", "stop", "sshd.service")))
+	if m := c.readMessage().msg; m.Decision != sudomsg.Dialog || m.Presence != sudomsg.Required {
+		t.Errorf("danger %+v", m)
+	}
+
+	// An ask rule is its own question inside a window, any listed key's.
+	h.remoteWindow(100, k, 15*time.Minute)
+	c = h.remoteSudo(504)
+	c.send(approval(remote("systemctl", "reload", "foo")))
+	if m := c.readMessage().msg; m.Decision != sudomsg.Question || m.Rule == nil || m.WindowKey != nil {
+		t.Errorf("an ask rule inside a window %+v", m)
+	}
+	h.none()
 }
 
 // A project's signed chase.json, as the courier would return it.

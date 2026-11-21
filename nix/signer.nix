@@ -1,5 +1,6 @@
 # nixosModules.signer: quoin-signer, the only holder of the TPM, serving
-# forUser's SSH agent at /run/quoin-signer/agent.
+# forUser's SSH agent at /run/quoin-signer/agent; and quoin-presence, the
+# presence check of its remote sudo dialog, at /run/quoin-presence/sock.
 self:
 { config, lib, pkgs, utils, ... }:
 
@@ -9,6 +10,9 @@ let
   inherit (lib) mkOption types;
   package = self.packages.${pkgs.stdenv.hostPlatform.system}.quoin or (throw "quoin: its packages are its release binaries, which only a release tag has (flake.nix): pin github:danielbodart/quoin/vX.Y.Z, not trunk");
   signer = lib.getExe' package "quoin-signer";
+  # Built from source, as the sudo plugin is: it links PAM.
+  presence = (import ./sudo-zig.nix { inherit pkgs; }).presence;
+  uid = 951;
   rule = types.enum [ "allow" "ask" ];
   # A main process is known by its comm, which the kernel cuts at 15
   # bytes, so a longer name could never be recognised; check refuses one too.
@@ -20,9 +24,13 @@ let
       u.isNormalUser && (u.group == "tss" || lib.elem "tss" u.extraGroups || lib.elem name config.users.groups.tss.members))
     (lib.attrNames config.users.users);
 
+  # quoin-presence's PAM stack, the sudo dialog's.
+  authStack = map (r: r.name) (lib.sort (a: b: a.order < b.order)
+    (lib.filter (r: r.enable) (lib.attrValues config.security.pam.services.quoin-sudo.rules.auth)));
+
   tpm = {
-    User = "ssh-signer";
-    Group = "ssh-signer";
+    User = "quoin-signer";
+    Group = "quoin-signer";
     SupplementaryGroups = [ "tss" ];
     DevicePolicy = "closed";
     DeviceAllow = [ "/dev/tpmrm0 rw" ];
@@ -129,7 +137,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    services.quoin.policy.courier.peers."quoin-signer.service" = "ssh-signer";
+    services.quoin.policy.courier.peers."quoin-signer.service" = "quoin-signer";
 
     assertions = [{
       assertion = inTss == [ ];
@@ -138,16 +146,29 @@ in
       {
         assertion = !policy.courier.enable || policy.courier.forUser == cfg.forUser;
         message = "services.quoin.policy.courier.forUser (${policy.courier.forUser}) is not services.quoin.signer.forUser (${cfg.forUser}): the signer reads the projects of the user it serves.";
+      }
+      {
+        assertion = cfg.forUser != "root";
+        message = "services.quoin.signer.forUser is root: quoin-presence never checks root's password.";
+      }
+      {
+        assertion = authStack == [ "unix" "deny" ];
+        message = "only the password may pass the signer's sudo dialog: the quoin-sudo PAM service's auth rules are ${toString authStack}, not unix deny";
       }];
 
     security.tpm2.enable = true;
 
-    users.users.ssh-signer = {
-      uid = 951;
-      group = "ssh-signer";
+    # Once ssh-signer: the uid is kept, so what it owns still works.
+    users.users.quoin-signer = {
+      inherit uid;
+      group = "quoin-signer";
       isSystemUser = true;
     };
-    users.groups.ssh-signer.gid = 951;
+    users.groups.quoin-signer.gid = uid;
+
+    # The sudo dialog's PAM service, which quoin-presence runs as the
+    # plugin does, so a change to it changes both.
+    security.pam.services.quoin-sudo = { };
 
     environment.etc."quoin/signer.json".source = configFile;
 
@@ -166,8 +187,8 @@ in
     systemd.services.quoin-signer = {
       description = "quoin-signer: SSH keys in the TPM, asked for through galley";
       requires = [ "quoin-signer.socket" ];
-      wants = lib.optional policy.courier.enable "quoin-courier.socket";
-      after = [ "quoin-signer.socket" ] ++ lib.optional policy.courier.enable "quoin-courier.socket";
+      wants = [ "quoin-presence.socket" ] ++ lib.optional policy.courier.enable "quoin-courier.socket";
+      after = [ "quoin-signer.socket" "quoin-presence.socket" ] ++ lib.optional policy.courier.enable "quoin-courier.socket";
       startLimitIntervalSec = 0;
       restartTriggers = [ configFile ];
       serviceConfig = tpm // {
@@ -186,6 +207,65 @@ in
         RestrictAddressFamilies = [ "AF_UNIX" ];
         SystemCallFilter = [ "@system-service" "~@privileged" ];
         MemoryDenyWriteExecute = true;
+        LimitCORE = 0;
+      };
+    };
+
+    # One request at a time (Accept=no), so pam_unix's fail delay limits
+    # the guesses; only the signer may connect, and the helper checks it.
+    systemd.sockets.quoin-presence = {
+      description = "quoin-presence socket, the signer's";
+      wantedBy = [ "sockets.target" ];
+      socketConfig = {
+        ListenStream = "/run/quoin-presence/sock";
+        SocketUser = "quoin-signer";
+        SocketMode = "0600";
+        DirectoryMode = "0755";
+        Accept = false;
+      };
+    };
+
+    # Root, to read the password hashes, and for now; forUser is fixed
+    # here, never read from anything the signer can write. The other quoin
+    # units' sandbox, and more: file modes do not hold uid 0, with or
+    # without capabilities, so it sees only what PAM needs. No /run but
+    # nscd, the wrappers (unix_chkpwd) and the journal, no /var or
+    # /nix/var, no host keys, and its own network namespace for abstract
+    # sockets: none of systemd's, D-Bus's, nix-daemon's or the gate's
+    # sockets. Its socket comes from systemd.
+    systemd.services.quoin-presence = {
+      description = "quoin-presence: the password of the signer's sudo dialog, checked by PAM's quoin-sudo service";
+      requires = [ "quoin-presence.socket" ];
+      after = [ "quoin-presence.socket" ];
+      serviceConfig = {
+        ExecStart = utils.escapeSystemdExecArgs [ (lib.getExe' presence "quoin-presence") cfg.forUser (toString uid) ];
+        NoNewPrivileges = true;
+        CapabilityBoundingSet = "";
+        ProcSubset = "pid";
+        PrivateDevices = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        ProtectControlGroups = true;
+        TemporaryFileSystem = [ "/run:ro" "/var:ro" ];
+        BindReadOnlyPaths = [ "-/run/nscd" "-/run/wrappers" "-/run/systemd/journal" ];
+        InaccessiblePaths = [ "-/etc/ssh" "-/boot" "-/nix/var" ];
+        PrivateNetwork = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        RestrictNamespaces = true;
+        LockPersonality = true;
+        RestrictSUIDSGID = true;
+        RestrictRealtime = true;
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        # pam_unix reads a shadowed hash through unix_chkpwd, even as root,
+        # and says setuid(0) before running it.
+        SystemCallFilter = [ "@system-service" "~@privileged" "@setuid" ];
+        MemoryDenyWriteExecute = true;
+        LimitCORE = 0;
       };
     };
 

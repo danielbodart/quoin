@@ -1,4 +1,4 @@
-//! quoin-sudo's Zig: install, test, lint, fmt and analyze steps.
+//! quoin-sudo's Zig: install, presence, test, lint, fmt and analyze steps.
 const std = @import("std");
 
 const gate_path = "/run/quoin-sudo/gate.sock";
@@ -26,6 +26,10 @@ pub fn build(b: *std.Build) void {
         install.dependOn(&b.addFail("install needs -Dsudo-version=VERSION, the sudo the plugin is built for").step);
     }
 
+    // quoin-presence is the signer's, and needs no sudo version.
+    const presence_step = b.step("presence", "Install quoin-presence alone");
+    presence_step.dependOn(&b.addInstallArtifact(presence(b, target, optimize, true), .{}).step);
+
     const test_step = b.step("test", "Run the unit and property tests");
     if (!dev) {
         test_step.dependOn(&b.addFail("needs -Ddev=true").step);
@@ -45,6 +49,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "sudomsg", .root_module = sudomsg })).step);
         const pam_cfg = config(b, "quoin-sudo-test-pam.sock", uid, .stock, "test");
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "pam", .root_module = pamHelper(b, target, optimize, pam_cfg, false).root_module })).step);
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "presence", .root_module = presence(b, target, optimize, false).root_module })).step);
 
         const opts = b.addOptions();
         opts.addOption([]const u8, "path", oracle.?);
@@ -128,7 +133,7 @@ pub fn build(b: *std.Build) void {
         analyze_step.dependOn(&b.addFail("needs -Ddev=true").step);
     } else if (b.lazyDependency("zwanzig", .{ .target = b.graph.host, .optimize = .ReleaseFast })) |zw| {
         const exe = zw.artifact("zwanzig");
-        for ([_][]const u8{ "fd.zig", "wire.zig", "chain.zig", "agent.zig", "ids.zig", "quoin_sudo.zig", "quoin-sudo-pam.zig", "quoin-sudo-check-plugin.zig" }) |file| {
+        for ([_][]const u8{ "fd.zig", "wire.zig", "chain.zig", "agent.zig", "ids.zig", "pam.zig", "quoin_sudo.zig", "quoin-sudo-pam.zig", "quoin-sudo-check-plugin.zig", "quoin-presence.zig" }) |file| {
             const run = b.addRunArtifact(exe);
             run.addArg("--config");
             run.addFileArg(b.path(".zwanzig.json"));
@@ -175,6 +180,7 @@ const Modules = struct {
     agent: *std.Build.Module,
     ids: *std.Build.Module,
     args: *std.Build.Module,
+    pam: *std.Build.Module,
 
     fn get(m: Modules, name: []const u8) *std.Build.Module {
         inline for (@typeInfo(Modules).@"struct".fields) |f| {
@@ -216,7 +222,14 @@ fn modules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .imports = &.{ .{ .name = "abi", .module = abi }, .{ .name = "fd", .module = fd } },
     });
     const args = b.createModule(.{ .root_source_file = b.path("args.zig"), .target = target, .optimize = optimize });
-    return .{ .abi = abi, .fd = fd, .wire = wire, .chain = chain, .agent = agent, .ids = ids, .args = args };
+    const pam = b.createModule(.{
+        .root_source_file = b.path("pam.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "abi", .module = abi }},
+    });
+    return .{ .abi = abi, .fd = fd, .wire = wire, .chain = chain, .agent = agent, .ids = ids, .args = args, .pam = pam };
 }
 
 fn plugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, m: Modules, cfg: *std.Build.Module, strip: bool) *std.Build.Step.Compile {
@@ -237,7 +250,29 @@ fn plugin(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
                 .{ .name = "agent", .module = m.agent },
                 .{ .name = "ids", .module = m.ids },
                 .{ .name = "args", .module = m.args },
+                .{ .name = "pam", .module = m.pam },
                 .{ .name = "config", .module = cfg },
+            },
+        }),
+    });
+}
+
+/// The signer's presence check: PAM's quoin-sudo service, as the plugin's
+/// dialog runs it, behind a socket of the signer's.
+fn presence(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, strip: bool) *std.Build.Step.Compile {
+    const m = modules(b, target, optimize);
+    return b.addExecutable(.{
+        .name = "quoin-presence",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("quoin-presence.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = strip,
+            .imports = &.{
+                .{ .name = "abi", .module = m.abi },
+                .{ .name = "fd", .module = m.fd },
+                .{ .name = "pam", .module = m.pam },
             },
         }),
     });

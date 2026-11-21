@@ -1,7 +1,7 @@
 // Package agentsrv serves the SSH agent protocol for quoin-signer: each
-// connection's session binds, the userauth, SSHSIG and remote sudo parsers,
-// the fixed order in which a sign is made silently or asked, and the
-// policy-sign extension.
+// connection's session binds, the userauth and SSHSIG parsers, the fixed
+// order in which a sign is made silently or asked, and the policy-sign and
+// quoin-sudo extensions.
 package agentsrv
 
 import (
@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -55,8 +54,17 @@ type Server struct {
 	Hosts      map[string]Rule
 	Keys       []Key
 	KnownHosts string
-	Grants     *grant.Grants
-	Log        *slog.Logger
+	// HostKeys is a glob of this machine's own public host keys, as its
+	// sudo gate reads them: a quoin-sudo request on an unbound connection
+	// from a mosey client whose message names only these is this machine's
+	// own sudo, reached through a local mosey session's relay. Empty is
+	// none.
+	HostKeys string
+	// Presence is the presence helper's socket, which checks the secret a
+	// remote sudo's dialog takes. Empty is none: a dialog is refused.
+	Presence string
+	Grants   *grant.Grants
+	Log      *slog.Logger
 	// Policy, when set, reads the project policy of the process that asks
 	// and offers Always; nil reads none.
 	Policy *Policy
@@ -191,9 +199,16 @@ type request struct {
 	host      ssh.PublicKey
 	claimed   []byte
 	fwd       bool
-	sudo      *sudomsg.Message
-	// subject is a remote sudo's, read from its message once.
+	// sudo is a remote sudo's message, raw its bytes as sent and subject
+	// what it carries, read from it once; via are the hosts it came
+	// through, before host, and answer what the signer answered it with.
+	sudo    *sudomsg.Message
+	raw     []byte
 	subject *sudoq.Subject
+	via     []string
+	answer  *sudomsg.Answer
+	// wrong counts the secrets the presence helper failed.
+	wrong int
 
 	key       Key
 	keyFP     string
@@ -269,22 +284,51 @@ func (c *conn) SignWithFlags(key ssh.PublicKey, data []byte, _ agent.SignatureFl
 
 func (c *conn) Extension(typ string, contents []byte) (_ []byte, err error) {
 	defer c.refusePanic(&err)
-	if typ == policysign.Extension {
+	switch typ {
+	case policysign.Extension:
 		return c.policySign(contents), nil
-	}
-	if typ != "session-bind@openssh.com" {
+	case sudomsg.Extension:
+		return c.sudo(contents)
+	case "session-bind@openssh.com":
+	default:
 		return nil, agent.ErrExtensionUnsupported
 	}
 	if len(c.binds) >= maxBinds {
 		return nil, errors.New("too many session binds")
 	}
 	b, err := parseBind(contents)
+	if err == nil {
+		var again bool
+		again, err = c.rebind(b)
+		if again {
+			return nil, nil
+		}
+	}
 	if err != nil {
 		c.s.Log.Warn("session-bind refused", "err", err.Error(), "chain", c.r.Chain)
 		return nil, err
 	}
 	c.binds = append(c.binds, b)
 	return nil, nil
+}
+
+// rebind refuses b as OpenSSH's ssh-agent does: after a bind that does not
+// forward, which was for a login and is the connection's last, and for a
+// session id already bound to another host key. The same session id and
+// host key again is again: kept once.
+func (c *conn) rebind(b *bind) (again bool, err error) {
+	for _, old := range c.binds {
+		if !old.fwd {
+			return false, errors.New("a bind after one that does not forward")
+		}
+		if bytes.Equal(old.sid, b.sid) {
+			if !bytes.Equal(old.hostKey.Marshal(), b.hostKey.Marshal()) {
+				return false, errors.New("a session id already bound to another host key")
+			}
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (c *conn) Add(agent.AddedKey) error       { return errRefused }
@@ -318,7 +362,7 @@ func (c *conn) classify(key ssh.PublicKey, data []byte) (*request, error) {
 		req.fwd = req.fwd || b.fwd
 	}
 	if sudomsg.HasMagic(data) {
-		return c.remoteSudo(req, data)
+		return nil, errors.New("a quoin-sudo message is answered only through " + sudomsg.Extension)
 	}
 	if ns, _, err := projpolicy.ParseSignedData(data); err == nil {
 		req.class, req.namespace = classSSHSIG, ns
@@ -350,36 +394,6 @@ func (c *conn) classify(key ssh.PublicKey, data []byte) (*request, error) {
 	return req, nil
 }
 
-// remoteSudo classifies a sign over a remote sudo's message: parsed
-// strictly and read as a sudoq.Subject, on a connection whose last
-// bind is forwarded and to one of the message's host keys.
-func (c *conn) remoteSudo(req *request, data []byte) (*request, error) {
-	m, err := sudomsg.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("remote sudo: %w", err)
-	}
-	subject, err := sudoq.FromMessage(m)
-	if err != nil {
-		return nil, fmt.Errorf("remote sudo: %w", err)
-	}
-	req.subject = &subject
-	if len(c.binds) == 0 {
-		return nil, errors.New("remote sudo on an unbound connection")
-	}
-	last := c.binds[len(c.binds)-1]
-	if !last.fwd {
-		return nil, errors.New("remote sudo on a connection that is not forwarded")
-	}
-	bound := last.hostKey.Marshal()
-	for _, k := range m.HostKeys {
-		if bytes.Equal(k, bound) {
-			req.class, req.host, req.sudo, req.fwd = classRemoteSudo, last.hostKey, m, true
-			return req, nil
-		}
-	}
-	return nil, fmt.Errorf("remote sudo bound to %s, not one of the message's host keys", ssh.FingerprintSHA256(last.hostKey))
-}
-
 // throughOwn is whether every forwarded bind on the connection is to a
 // host ForwardedThrough names, so a forwarded sign is judged as a direct
 // one. A bind to a host key the known hosts file does not list, or lists
@@ -402,7 +416,7 @@ func (c *conn) throughOwn() bool {
 
 func (c *conn) decide(req *request) verdict {
 	r := c.r
-	if req.class == classRemoteSudo || req.class == classForwarded {
+	if req.class == classForwarded {
 		return c.ask(req)
 	}
 	direct := !req.fwd || c.throughOwn()
@@ -529,12 +543,8 @@ func (c *conn) record(req *request, v verdict) {
 	if l := req.proj; l != nil {
 		attrs = append(attrs, "project", l.root, "project_digest", l.digest, "project_applies", l.apply)
 	}
-	if m := req.sudo; m != nil {
-		attrs = append(attrs, "user", m.User, "runas", m.RunAs, "cwd", m.Cwd,
-			"argv", m.Argv, "nonce", hex.EncodeToString(m.Nonce),
-			"danger", m.Danger, "env", m.Env, "level", req.question.Level,
-			"remote_chain", req.subject.Chain.Chain, "remote_cut", req.subject.Chain.Cut,
-			"cmdlines_left_out", m.Truncated, "fields_ignored", m.Ignored)
+	if req.sudo != nil {
+		attrs = append(attrs, sudoAttrs(req)...)
 	}
 	if v.err != nil {
 		attrs = append(attrs, "err", v.err.Error())
@@ -549,11 +559,6 @@ func (c *conn) describe(req *request) {
 	pub, _ := ssh.NewPublicKey(req.key.Signer.Public())
 	req.keyFP = ssh.FingerprintSHA256(pub)
 	keyLine := fmt.Sprintf("key %s (%s)", req.keyFP, galleyask.Clean(req.key.Comment))
-	if req.class == classRemoteSudo {
-		c.describeRemoteSudo(req, keyLine)
-		return
-	}
-
 	var title string
 	lines := galleyask.Warnings(r)
 	lines = append(lines, keyLine)
@@ -606,12 +611,16 @@ func (c *conn) describe(req *request) {
 	req.question = galleyask.Question{Title: title, Text: strings.Join(lines, "\n"), Level: level, Grantable: req.grantable, Chain: galleyask.Chain(r)}
 }
 
-// describeRemoteSudo asks a remote sudo as its host would ask it
-// locally, its chain the table, with this connection's chain on
-// "from here: " lines.
-func (c *conn) describeRemoteSudo(req *request, keyLine string) {
-	req.dest = c.hostName(req.host)
-	req.question = sudoq.Question(*req.subject, sudoq.Options{Host: req.dest, Here: c.r, Footer: []string{keyLine}})
+// fingerprints are blobs' SHA256 fingerprints, "" for one that does not
+// parse.
+func fingerprints(blobs [][]byte) []string {
+	fps := make([]string, len(blobs))
+	for i, b := range blobs {
+		if k, err := ssh.ParsePublicKey(b); err == nil {
+			fps[i] = ssh.FingerprintSHA256(k)
+		}
+	}
+	return fps
 }
 
 // hostNames are key's names in the known hosts file.

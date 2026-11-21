@@ -5,7 +5,8 @@
 # is known by its comm: a tab (script as .kgx-wrapped, holding a pty, with
 # bash on it), a claude (bash as claude) and a login signer's main process
 # (ssh as porter, in a stand-in porter.service, listed in loginSigners, with
-# the hardening such a daemon has).
+# the hardening such a daemon has). And quoin-presence, asked as the signer
+# would ask it.
 { self }:
 { lib, hostPkgs, ... }:
 
@@ -30,6 +31,26 @@ let
     cp ${pkgs.bash}/bin/bash $out/bin/claude
     cp ${pkgs.openssh}/bin/ssh $out/ssh/porter
     cp ${pkgs.bash}/bin/bash $out/sh/porter
+  '';
+
+  # presence SECRET [VERSION]: one request to quoin-presence, printing its
+  # reply, which is empty when it closes with none, before or after reading.
+  presence = pkgs.writeScript "presence" ''
+    #!${pkgs.python3}/bin/python3
+    import socket, struct, sys
+
+    secret = sys.argv[1].encode()
+    version = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect("/run/quoin-presence/sock")
+    reply = b""
+    try:
+        s.sendall(bytes([version]) + struct.pack(">H", len(secret)) + secret)
+        while got := s.recv(16):
+            reply += got
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    sys.stdout.write(reply.decode())
   '';
 
   betaConfig = pkgs.writeText "sshd_config_beta" ''
@@ -196,6 +217,7 @@ in
 
     # Started, not polled for: start joins the job boot queued and returns once it is done.
     machine.succeed("systemctl start quoin-signer.socket")
+    machine.succeed("systemctl start quoin-presence.socket")
     machine.succeed("systemctl start sshd.service")
     machine.succeed("systemctl start sshd-beta.service")
     machine.succeed("systemctl start user@1000.service")
@@ -209,9 +231,29 @@ in
         assert "tss" not in machine.succeed("id -nG dan").split()
         machine.fail("runuser -u dan -- ${pkgs.runtimeShell} -c ': <> /dev/tpmrm0'")
 
+    with subtest("quoin-presence passes dan's password and fails a wrong one, for the signer only"):
+        machine.succeed("echo dan:sesame | chpasswd")
+        signer = "runuser -u quoin-signer -- ${presence}"
+        assert machine.succeed(f"{signer} sesame") == "P"
+        assert machine.succeed(f"{signer} sesamE") == "F"
+        # A request of another version, or with a newline, is closed unanswered.
+        assert machine.succeed(f"{signer} sesame 2") == ""
+        assert machine.succeed(f"{signer} $'sesame\\n'") == ""
+        # dan cannot reach the socket; root can, and is not the signer.
+        out = machine.fail("runuser -u dan -- ${presence} sesame 2>&1")
+        assert "PermissionError" in out, out
+        assert machine.succeed("${presence} sesame") == ""
+        machine.succeed("journalctl --sync")
+        out = machine.succeed("journalctl -u quoin-presence.service -o cat")
+        assert out.count("quoin-presence: passed") == 1 and out.count("quoin-presence: failed") == 1, out
+        assert out.count("not the signer") == 1 and out.count("malformed") == 2, out
+        machine.fail("journalctl -o cat | grep -F sesame")
+        for unit in ("quoin-presence", "quoin-signer"):
+            assert machine.succeed(f"systemctl show -P LimitCORE {unit}.service").strip() == "0"
+
     with subtest("a key made by stock ssh-tpm-keygen loads"):
         machine.succeed("SSH_ASKPASS_REQUIRE=never ssh-tpm-keygen -f /root/id_ecdsa -C dan@machine </dev/null")
-        machine.succeed("install -o ssh-signer -g ssh-signer -m 0600 /root/id_ecdsa.tpm /var/lib/quoin-signer/")
+        machine.succeed("install -o quoin-signer -g quoin-signer -m 0600 /root/id_ecdsa.tpm /var/lib/quoin-signer/")
         machine.succeed("install -d -o dan -g users -m 0700 /home/dan/.ssh")
         machine.succeed("install -o dan -g users -m 0600 /root/id_ecdsa.pub /home/dan/.ssh/authorized_keys")
         machine.succeed("systemctl restart quoin-signer.service")
@@ -222,7 +264,7 @@ in
         machine.succeed("systemctl start quoin-signer-keygen.service")
         out = machine.succeed("ssh-keygen -l -f /var/lib/quoin-signer/new/id_ecdsa.pub")
         assert "(ECDSA)" in out, out
-        machine.succeed("test \"$(stat -c %U /var/lib/quoin-signer/new/id_ecdsa.tpm)\" = ssh-signer")
+        machine.succeed("test \"$(stat -c %U /var/lib/quoin-signer/new/id_ecdsa.tpm)\" = quoin-signer")
 
     machine.succeed("install -d -o dan -g users -m 0755 /run/fakegalley")
     galley("answer 0")

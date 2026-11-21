@@ -6,7 +6,8 @@
 //! checked in, it asks the plugin loaded in this same sudo whether it armed
 //! for it. Success skips the password; anything else is PAM_IGNORE, and the
 //! stack goes on as stock. The plugin, armed, still has every command
-//! signed in accept, so a skip here is never an approval.
+//! answered in accept, a person's presence verified on the signer's
+//! machine, so a skip here is never an approval.
 
 const std = @import("std");
 const c = @import("abi").c;

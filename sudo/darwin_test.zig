@@ -1,9 +1,11 @@
 //! The darwin plugin from outside, built to take every agent for a
 //! forwarder's:
 //! open, quoin_sudo_armed (the PAM module's question) and accept, against
-//! a test agent on a socket that holds a real nistp256 key. An armed sudo
-//! is approved by a good signature from a listed key and by nothing else;
-//! a sudo it does not arm for is stock.
+//! a test agent on a socket that holds a real nistp256 key and answers the
+//! quoin-sudo@quoin extension. An armed sudo is approved by an answer that
+//! checks as the gate checks it, signed by a listed key over the message
+//! then the answer, and by nothing else; a sudo it does not arm for is
+//! stock.
 
 const std = @import("std");
 const plugin = @import("plugin");
@@ -114,10 +116,30 @@ fn close() void {
 
 // ---- the agent's side ----
 
-const Answer = enum { sign, refuse, hang_up, garbage, wrong_key, unlisted };
+const Answer = enum {
+    allow,
+    allow_here,
+    refuse,
+    hang_up,
+    garbage,
+    wrong_key,
+    unlisted,
+    plain_sign,
+    over_message,
+    refused,
+    not_verified,
+    window,
+    elsewhere,
+    malformed,
+    critical,
+    go_golden,
+};
 
 var listed_kp: Ec.KeyPair = undefined;
 var other_kp: Ec.KeyPair = undefined;
+/// The host's ecdsa host key's blob, a hop that names this host.
+var host_blob_buf: [128]u8 = undefined;
+var host_blob: []const u8 = "";
 
 fn sshString(out: []u8, at: *usize, b: []const u8) void {
     std.mem.writeInt(u32, out[at.*..][0..4], @intCast(b.len), .big);
@@ -146,8 +168,65 @@ fn mpint(out: []u8, at: *usize, half: []const u8) void {
     sshString(out, at, m[0..n]);
 }
 
-/// One agent connection: identities, then the sign request answered as
-/// `answer` says; the message it was asked to sign kept.
+/// An answer of `fields`, key then value, in order.
+fn answerOf(out: []u8, fields: []const []const u8) []u8 {
+    var at: usize = 0;
+    sshString(out, &at, sudomsg.answer_magic);
+    const start = at;
+    at += 4;
+    for (fields) |f| sshString(out, &at, f);
+    std.mem.writeInt(u32, out[start..][0..4], @intCast(at - start - 4), .big);
+    return out[0..at];
+}
+
+/// Hops of one hop, for `key`, forwarded.
+fn oneHop(out: []u8, key: []const u8) []u8 {
+    var entry: [160]u8 = undefined;
+    var ea: usize = 0;
+    sshString(&entry, &ea, key);
+    entry[ea] = 1;
+    ea += 1;
+    std.mem.writeInt(u32, out[0..4], 1, .big);
+    var at: usize = 4;
+    sshString(out, &at, entry[0..ea]);
+    return out[0..at];
+}
+
+const no_hops = "\x00\x00\x00\x00";
+const no_window = "\x00\x00\x00\x00";
+
+/// What the signer answers for `answer`.
+fn answerFor(out: []u8, answer: Answer) []const u8 {
+    var hb: [256]u8 = undefined;
+    var kb: [128]u8 = undefined;
+    return switch (answer) {
+        .refused => answerOf(out, &.{ "!decision", "refuse", "!hops", no_hops, "!presence", "verified", "!window", no_window }),
+        .not_verified => answerOf(out, &.{ "!decision", "allow", "!hops", no_hops, "!presence", "none", "!window", no_window }),
+        .window => answerOf(out, &.{ "!decision", "allow", "!hops", no_hops, "!presence", "verified", "!window", "\x00\x00\x0e\x10" }),
+        .elsewhere => answerOf(out, &.{ "!decision", "allow", "!hops", oneHop(&hb, blob(&kb, other_kp)), "!presence", "verified", "!window", no_window }),
+        .allow_here => answerOf(out, &.{ "!decision", "allow", "!hops", oneHop(&hb, host_blob), "!presence", "verified", "!window", no_window }),
+        .malformed => answerOf(out, &.{ "!decision", "allow", "!presence", "verified", "!window", no_window }),
+        .critical => answerOf(out, &.{ "!decision", "allow", "!hops", no_hops, "!note", "", "!presence", "verified", "!window", no_window }),
+        .go_golden => @embedFile("testdata/sudomsg/answer.bin"),
+        else => answerOf(out, &.{ "!decision", "allow", "!hops", no_hops, "!presence", "verified", "!window", no_window }),
+    };
+}
+
+/// SIGN_RESPONSE's signature string, by `kp`, over `data`.
+fn signature(out: []u8, kp: Ec.KeyPair, data: []const u8) ?[]u8 {
+    const sig = kp.sign(data, null) catch return null;
+    var inner: [80]u8 = undefined;
+    var ia: usize = 0;
+    mpint(&inner, &ia, &sig.r);
+    mpint(&inner, &ia, &sig.s);
+    var at: usize = 0;
+    sshString(out, &at, "ecdsa-sha2-nistp256");
+    sshString(out, &at, inner[0..ia]);
+    return out[0..at];
+}
+
+/// One agent connection: identities, then the extension request answered
+/// as `answer` says; the message it was asked kept.
 const Agent = struct {
     listener: std.posix.socket_t,
     answer: Answer,
@@ -194,33 +273,39 @@ const Agent = struct {
         sshString(&ids, &at, "test key");
         send(conn, ids[0..at]);
         const req = frame(conn, &buf) orelse return;
+        if (req[0] != 27) return;
         var r: agent.Reader = .{ .b = req[1..] };
+        if (!std.mem.eql(u8, r.string() orelse return, sudomsg.extension)) return;
         _ = r.string();
         const msg = r.string() orelse return;
+        if (!r.done()) return;
         @memcpy(a.message[0..msg.len], msg);
         a.message_len = msg.len;
+        var ab: [512]u8 = undefined;
+        const answer = answerFor(&ab, a.answer);
+        var signed: [16384 + 1024]u8 = undefined;
+        @memcpy(signed[0..msg.len], msg);
+        @memcpy(signed[msg.len..][0..answer.len], answer);
+        const over = if (a.answer == .over_message) msg else signed[0 .. msg.len + answer.len];
+        var sb: [160]u8 = undefined;
+        const sig = signature(&sb, if (a.answer == .wrong_key) other_kp else listed_kp, over) orelse return;
+        var resp: [1024]u8 = undefined;
+        var ra: usize = 1;
         switch (a.answer) {
             .hang_up, .unlisted => return,
-            .refuse => send(conn, &.{5}),
-            .garbage => send(conn, &.{ 14, 0, 0 }),
-            .sign, .wrong_key => {
-                const kp = if (a.answer == .sign) listed_kp else other_kp;
-                const sig = kp.sign(msg, null) catch return;
-                var inner: [80]u8 = undefined;
-                var ia: usize = 0;
-                mpint(&inner, &ia, &sig.r);
-                mpint(&inner, &ia, &sig.s);
-                var sb: [160]u8 = undefined;
-                var sa: usize = 0;
-                sshString(&sb, &sa, "ecdsa-sha2-nistp256");
-                sshString(&sb, &sa, inner[0..ia]);
-                var resp: [200]u8 = undefined;
+            .refuse => return send(conn, &.{5}),
+            .garbage => return send(conn, &.{ 6, 0, 0 }),
+            .plain_sign => {
                 resp[0] = 14;
-                var ra: usize = 1;
-                sshString(&resp, &ra, sb[0..sa]);
-                send(conn, resp[0..ra]);
+                sshString(&resp, &ra, sig);
+            },
+            else => {
+                resp[0] = 6;
+                sshString(&resp, &ra, answer);
+                sshString(&resp, &ra, sig);
             },
         }
+        send(conn, resp[0..ra]);
     }
 };
 
@@ -268,11 +353,21 @@ fn fixture() !void {
     std.fs.cwd().deleteTree(config.host_keys_dir) catch {};
     try std.fs.cwd().makePath(config.host_keys_dir);
     var hb: [300]u8 = undefined;
-    try writeFile(config.host_keys_dir ++ "/ssh_host_ecdsa_key.pub", try keyLine(&hb, Ec.KeyPair.generate()));
+    const host_kp = Ec.KeyPair.generate();
+    host_blob = blob(&host_blob_buf, host_kp);
+    try writeFile(config.host_keys_dir ++ "/ssh_host_ecdsa_key.pub", try keyLine(&hb, host_kp));
     try writeFile(config.host_keys_dir ++ "/ssh_host_ed25519_key.pub", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE7wrGycGisT+fHX2DD9ohFP+IzDJOQ4cqprClYHszBR host\n");
     try writeFile(config.host_keys_dir ++ "/ssh_host_bad_key.pub", "not a key\n");
     try writeFile(config.host_keys_dir ++ "/other.pub", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE7wrGycGisT+fHX2DD9ohFP+IzDJOQ4cqprClYHszBR other\n");
     try writeFile(config.log_path, "");
+}
+
+/// `SHA256:` and the unpadded base64 of the blob's SHA-256.
+fn fingerprint(out: *[64]u8, b: []const u8) []const u8 {
+    var sum: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(b, &sum, .{});
+    @memcpy(out[0..7], "SHA256:");
+    return out[0 .. 7 + std.base64.standard_no_pad.Encoder.encode(out[7..], &sum).len];
 }
 
 fn lastRecord(buf: []u8) ![]const u8 {
@@ -308,9 +403,9 @@ fn armedSudo(answer: Answer) !struct { accepted: c_int, agent: *Agent, closed_by
     return .{ .accepted = got, .agent = a, .closed_by_accept = closed_by_accept };
 }
 
-test "a good signature from a listed key approves, over the message Go's gate would have built, the chain above sudo in it" {
+test "an allow, presence verified, no window and no hops, signed by a listed key over the message then the answer, approves; the message is the one Go's gate would have built, the chain above sudo in it" {
     try fixture();
-    const r = try armedSudo(.sign);
+    const r = try armedSudo(.allow);
     defer testing.allocator.destroy(r.agent);
     try testing.expectEqual(@as(c_int, 1), r.accepted);
     try testing.expect(r.closed_by_accept);
@@ -327,7 +422,8 @@ test "a good signature from a listed key approves, over the message Go's gate wo
     var f: agent.Reader = .{ .b = rd.string().? };
     try testing.expect(rd.done());
     // The fields in name order; the Mac has no danger catalogue, so no
-    // danger or env, and nothing left out, so no cut.
+    // danger or env, nothing left out, so no cut, and no rules or windows,
+    // so a dialog with presence required, no window and no rule.
     try testing.expectEqualStrings("!argv", f.string().?);
     var argv: agent.Reader = .{ .b = f.string().? };
     try testing.expectEqual(@as(u32, 2), argv.int().?);
@@ -352,17 +448,40 @@ test "a good signature from a listed key approves, over the message Go's gate wo
     try testing.expect(ch.done());
     try testing.expectEqualStrings("!cwd", f.string().?);
     try testing.expectEqualStrings("/the/cwd", f.string().?);
+    try testing.expectEqualStrings("!decision", f.string().?);
+    try testing.expectEqualStrings("dialog", f.string().?);
+    try testing.expectEqualStrings("!presence", f.string().?);
+    try testing.expectEqualStrings("required", f.string().?);
     try testing.expectEqualStrings("!runas", f.string().?);
     try testing.expectEqualStrings("root", f.string().?);
     try testing.expectEqualStrings("!user", f.string().?);
     var u: [32]u8 = undefined;
     try testing.expectEqualStrings(try std.fmt.bufPrint(&u, "tester{d}", .{c.getuid()}), f.string().?);
+    try testing.expectEqualStrings("!window", f.string().?);
+    try testing.expectEqualStrings("\x00\x00\x00\x00", f.string().?);
     try testing.expect(f.done());
     var lb: [8192]u8 = undefined;
     const rec = try lastRecord(&lb);
     try testing.expect(std.mem.indexOf(u8, rec, " chain=[\"") != null);
     try testing.expect(std.mem.indexOf(u8, rec, " outcome=allow source=\"signature\"") != null);
     try testing.expect(std.mem.indexOf(u8, rec, " key=SHA256:") != null);
+    try testing.expect(std.mem.indexOf(u8, rec, " hops=[] ") != null);
+}
+
+test "an allow whose last hop is this host approves, its hops in the record" {
+    try fixture();
+    const r = try armedSudo(.allow_here);
+    defer testing.allocator.destroy(r.agent);
+    try testing.expectEqual(@as(c_int, 1), r.accepted);
+    var fp: [64]u8 = undefined;
+    var want: [80]u8 = undefined;
+    const hops = try std.fmt.bufPrint(&want, " hops=[{s}] outcome=allow ", .{fingerprint(&fp, host_blob)});
+    var lb: [8192]u8 = undefined;
+    const rec = try lastRecord(&lb);
+    if (std.mem.indexOf(u8, rec, hops) == null) {
+        std.debug.print("record: {s}\nwant: {s}\n", .{ rec, hops });
+        return error.TestUnexpectedResult;
+    }
 }
 
 test "a refusal, and every failure once armed, refuses rather than falling back to the password" {
@@ -373,6 +492,17 @@ test "a refusal, and every failure once armed, refuses rather than falling back 
         .{ .answer = .garbage, .source = "source=\"agent\" reason=\"the forwarded agent sent garbage\"", .told = "quoin-sudo: the forwarded agent sent garbage" },
         .{ .answer = .unlisted, .source = "source=\"agent\" reason=\"no listed key in the forwarded agent\"", .told = "quoin-sudo: no listed key in the forwarded agent" },
         .{ .answer = .wrong_key, .source = "source=\"signature did not verify\"", .told = "signature did not verify" },
+        .{ .answer = .plain_sign, .source = "source=\"agent\" reason=\"the forwarded agent sent garbage\"", .told = "quoin-sudo: the forwarded agent sent garbage" },
+        .{ .answer = .over_message, .source = "source=\"signature did not verify\"", .told = "signature did not verify" },
+        .{ .answer = .malformed, .source = "source=\"answer\" reason=\"not a well-formed quoin-sudo answer\"", .told = "quoin-sudo: not a well-formed quoin-sudo answer" },
+        .{ .answer = .critical, .source = "source=\"answer\" reason=\"a quoin-sudo answer with a critical field this reader does not know\"", .told = "quoin-sudo: a quoin-sudo answer with a critical field this reader does not know" },
+        .{ .answer = .refused, .source = "source=\"signer\"", .told = "cancelled" },
+        .{ .answer = .not_verified, .source = "source=\"answer\" reason=\"presence was required and not verified\"", .told = "quoin-sudo: presence was required and not verified" },
+        .{ .answer = .window, .source = "source=\"answer\" reason=\"a window of 3600s, over the 0s offered\"", .told = "quoin-sudo: a window of 3600s, over the 0s offered" },
+        .{ .answer = .elsewhere, .source = "source=\"answer\" reason=\"the last hop is not this host\"", .told = "quoin-sudo: the last hop is not this host" },
+        // Go's golden allow, an hour's window through two hops: the Mac
+        // offers no window.
+        .{ .answer = .go_golden, .source = "source=\"answer\" reason=\"a window of 3600s, over the 0s offered\"", .told = "quoin-sudo: a window of 3600s, over the 0s offered" },
     };
     for (cases) |cs| {
         const r = try armedSudo(cs.answer);

@@ -1,7 +1,10 @@
 // Package sudogate decides each no-tty sudo that quoin-sudo's plugin sends
-// it: check-ins, one galley item per command, each claude's password
-// window, pinned to the galley process that took the password, and in remote
-// mode the message the forwarded agent signs in place of a password.
+// it: check-ins, then one decision, local or remote, by the same rules,
+// danger lines and windows -- allow, refuse, a dialog that checks a person
+// or a question that does not -- and each claude's window, which only its
+// opener answers inside. Only the asking differs: a local sudo is asked in
+// this host's galley, a remote one through the forwarded agent, whose
+// signed answer the gate checks.
 package sudogate
 
 import (
@@ -23,6 +26,7 @@ import (
 	"github.com/danielbodart/quoin/execrule"
 	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/internal/grant"
+	"github.com/danielbodart/quoin/internal/sudomsg"
 	"github.com/danielbodart/quoin/internal/sudoq"
 	"github.com/danielbodart/quoin/peer"
 	"github.com/danielbodart/quoin/sudo"
@@ -74,10 +78,20 @@ type proc struct {
 	start uint64
 }
 
+// window is a claude's window, opened by a dialog: locally pinned to the
+// galley process that took the password, remotely to the key that signed
+// the answer. Only its opener answers inside it, and a window of one kind
+// never covers a sudo of the other.
 type window struct {
 	until  time.Duration
 	galley proc
+	// key is the remote opener's public key blob; empty is a local window.
+	key string
 }
+
+// maxWindow is the longest window a remote dialog offers: galley's longest
+// "remember for".
+const maxWindow = 24 * time.Hour
 
 func (g *Gate) Serve(ln *net.UnixListener) error {
 	if err := g.init(); err != nil {
@@ -206,12 +220,9 @@ func (s *session) run() {
 		switch {
 		case req.kind == kindApproval && !s.asked:
 			s.asked = true
-			switch {
-			case req.remote != s.remote:
+			if req.remote != s.remote {
 				s.reply(replyNo, "")
-			case s.remote:
-				s.approveRemote(req)
-			default:
+			} else {
 				s.approve(req)
 			}
 		case req.kind == kindVerify && s.pending != nil:
@@ -265,6 +276,8 @@ type sudoReq struct {
 	shell bool
 	// rule is the exec rule that asks about it, if one does.
 	rule *ruled
+	// remote is a sudo asked through the forwarded agent.
+	remote bool
 
 	answer     galleyask.Answer
 	answeredAt time.Duration
@@ -280,7 +293,7 @@ func (g *Gate) describe(req *request) (*sudoReq, error) {
 	}
 	a := &sudoReq{
 		r: peer.FromLinks(req.links), user: userInfo["user"], runas: info["runas_user"], cwd: info["cwd"],
-		program: program, argv: req.argv, truncated: req.truncated,
+		program: program, argv: req.argv, truncated: req.truncated, remote: req.remote,
 	}
 	if a.cwd == "" {
 		a.cwd = userInfo["cwd"]
@@ -326,16 +339,21 @@ func pairs(entries []string) map[string]string {
 	return m
 }
 
-// subject is a as sudoq asks it: the program by the path sudo resolved.
+// subject is a as sudoq asks it: the program by the path sudo resolved,
+// and the rule that asks, if one does.
 func (a *sudoReq) subject() sudoq.Subject {
 	argv := []string{a.program}
 	if len(a.argv) > 1 {
 		argv = append(argv, a.argv[1:]...)
 	}
-	return sudoq.Subject{
+	s := sudoq.Subject{
 		Argv: argv, User: a.user, RunAs: a.runas, Cwd: a.cwd,
 		Danger: a.danger, Env: a.env, Chain: a.r,
 	}
+	if a.rule != nil {
+		s.Rule = &sudomsg.Rule{Pattern: a.rule.Pattern, Source: a.rule.source}
+	}
+	return s
 }
 
 func (a *sudoReq) level() string {
@@ -346,7 +364,6 @@ func (a *sudoReq) question(inWindow, wrong bool) galleyask.Question {
 	var lead []string
 	if a.rule != nil {
 		inWindow = true
-		lead = append(lead, a.rule.line(), "")
 	}
 	if wrong && !inWindow {
 		lead = append(lead, "Wrong password, try again", "")
@@ -357,19 +374,23 @@ func (a *sudoReq) question(inWindow, wrong bool) galleyask.Question {
 	return q
 }
 
-// window is the galley process a's claude's window is pinned to, or nil
-// when a is not inside a window.
-func (g *Gate) window(a *sudoReq) *proc {
+// window is the window a's claude is inside, of a's kind, local or
+// remote, or nil when it is inside none. A local window ends with its
+// galley process too.
+func (g *Gate) window(a *sudoReq) *window {
 	if !a.keyed() {
 		return nil
 	}
 	g.mu.Lock()
 	w, ok := g.windows[proc{a.r.Anchor.Pid, a.r.Anchor.Start}]
 	g.mu.Unlock()
-	if !ok || g.now() >= w.until || !g.alive(w.galley.pid, w.galley.start) {
+	if !ok || g.now() >= w.until || (w.key != "") != a.remote {
 		return nil
 	}
-	return &w.galley
+	if w.key == "" && !g.alive(w.galley.pid, w.galley.start) {
+		return nil
+	}
+	return &w
 }
 
 func (g *Gate) open(anchor proc, w window) {
@@ -392,6 +413,11 @@ func (g *Gate) windowsChanged() <-chan struct{} {
 	return g.changed
 }
 
+// approve decides a sudo, local or remote, the one way: an allow rule
+// allows and a refuse rule refuses, with no one asked; else an ask rule's
+// question, the window's question inside a window, or the dialog. Only
+// the asking differs: this host's galley for a local sudo, the forwarded
+// agent for a remote one.
 func (s *session) approve(req *request) {
 	a, err := s.g.describe(req)
 	if err != nil {
@@ -411,6 +437,10 @@ func (s *session) approve(req *request) {
 			return
 		}
 		a.rule = r
+	}
+	if a.remote {
+		s.askRemote(a)
+		return
 	}
 	s.decide(a, false)
 }
@@ -503,8 +533,8 @@ func (s *session) post(a *sudoReq, wrong bool) (got galleyask.Answer, pin *proc,
 	for {
 		changed := s.g.windowsChanged()
 		pin = nil
-		if a.rule == nil {
-			pin = s.g.window(a)
+		if w := s.g.window(a); a.rule == nil && w != nil {
+			pin = &w.galley
 		}
 		q := a.question(pin != nil, wrong)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -557,7 +587,7 @@ func (s *session) post(a *sudoReq, wrong bool) (got galleyask.Answer, pin *proc,
 
 func (s *session) record(a *sudoReq, outcome, source string, extra []any) {
 	attrs := []any{
-		"chain", a.r.Chain, "anchor", a.r.Anchor, "cut", a.r.Cut, "session_root", a.r.SessionRoot,
+		"remote", a.remote, "chain", a.r.Chain, "anchor", a.r.Anchor, "cut", a.r.Cut, "session_root", a.r.SessionRoot,
 		"pid", s.peer.Pid, "program", a.program, "argv", a.argv, "danger", a.danger, "env", a.env,
 		"truncated", a.truncated, "outcome", outcome, "source", source, "for", a.answer.For.String(),
 		"galley_pid", a.answer.Window.Pid, "galley_cgroup", a.answer.Window.Cgroup,

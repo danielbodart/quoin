@@ -112,6 +112,51 @@ pub const Sock = struct {
     }
 };
 
+/// A listening unix stream socket: the one systemd passes quoin-presence.
+pub const Listener = struct {
+    slot: u8,
+    gen: u32,
+
+    /// The next connection, SOCK_CLOEXEC. Waits for one as long as it takes.
+    pub fn accept(self: Listener) Error!Sock {
+        while (true) {
+            const rc = linux.accept4(live(self.slot, self.gen).raw, null, null, linux.SOCK.CLOEXEC);
+            switch (linux.E.init(rc)) {
+                .SUCCESS => return adopt(@intCast(rc)),
+                .INTR, .CONNABORTED => {},
+                else => return error.Sys,
+            }
+        }
+    }
+};
+
+/// SD_LISTEN_FDS_START: the first descriptor systemd passes.
+const listen_fds_start = 3;
+
+/// The one socket systemd passed this process, by LISTEN_PID and
+/// LISTEN_FDS (Accept=no), made close-on-exec, so no program PAM runs
+/// inherits it. error.Sys when it passed none, or more than one.
+pub fn systemdListener() Error!Listener {
+    const pid = std.fmt.parseInt(i32, std.posix.getenv("LISTEN_PID") orelse return error.Sys, 10) catch return error.Sys;
+    if (pid != linux.getpid()) return error.Sys;
+    if (!std.mem.eql(u8, std.posix.getenv("LISTEN_FDS") orelse return error.Sys, "1")) return error.Sys;
+    if (failed(linux.fcntl(listen_fds_start, linux.F.SETFD, linux.FD_CLOEXEC))) return error.Sys;
+    const s = try adopt(listen_fds_start);
+    return .{ .slot = s.slot, .gen = s.gen };
+}
+
+/// A connected pair, for tests.
+pub fn pair() Error![2]Sock {
+    var fds: [2]i32 = undefined;
+    if (failed(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0, &fds))) return error.Sys;
+    const a = adopt(fds[0]) catch |e| {
+        _ = linux.close(fds[1]);
+        return e;
+    };
+    errdefer a.close();
+    return .{ a, try adopt(fds[1]) };
+}
+
 /// Connects to the unix socket at `path`, SOCK_CLOEXEC. Nothing on it is
 /// bounded in time, and the connect never waits: a gate or agent that is
 /// not there refuses it, as does one whose backlog is full, so a listener

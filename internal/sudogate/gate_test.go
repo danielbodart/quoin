@@ -903,7 +903,7 @@ func FuzzNoRequestCrashesTheGate(f *testing.F) {
 	remoteCheckIn := frame(kindCheckIn, record('m', nil))
 	f.Add(append(remoteCheckIn, approval(remote)...))
 	f.Add(append(append(remoteCheckIn, approval(remote)...), frame(kindSign, record('f', []byte("refused")))...))
-	f.Add(append(append(remoteCheckIn, approval(remote)...), frame(kindSign, record('p', []byte("p")), record('g', []byte("g")))...))
+	f.Add(append(append(remoteCheckIn, approval(remote)...), frame(kindSign, record('p', []byte("p")), record('n', []byte("n")), record('g', []byte("g")))...))
 	f.Add(append(append(remoteCheckIn, approval(restart(links, "foo"))...), verified(true)...))
 	f.Add(append(frame(kindCheckIn), frame(kindSign, record('f', nil))...))
 	dir := f.TempDir()

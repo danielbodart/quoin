@@ -65,7 +65,7 @@ in
     remoteKeys = mkOption {
       type = types.listOf (types.strMatching "[^\n]+");
       default = [ ];
-      description = "SSH public key lines whose signature approves forUser's remote sudo with no tty (`ssh -A host sudo x`); empty is remote mode off.";
+      description = "SSH public key lines whose signed answer, through the quoin-sudo@quoin agent extension, approves forUser's remote sudo with no tty (`ssh -A host sudo x`); empty is remote mode off.";
     };
     danger = mkOption {
       type = types.attrsOf (types.submodule {
@@ -131,7 +131,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    services.quoin.policy.courier.peers."quoin-sudo.service" = "sudo-gate";
+    services.quoin.policy.courier.peers."quoin-sudo.service" = "quoin-sudo";
 
     assertions = [
       {
@@ -160,12 +160,13 @@ in
       }
     ];
 
-    users.users.sudo-gate = {
+    # Once sudo-gate: the uid is kept, so what it owns still works.
+    users.users.quoin-sudo = {
       uid = 952;
-      group = "sudo-gate";
+      group = "quoin-sudo";
       isSystemUser = true;
     };
-    users.groups.sudo-gate.gid = 952;
+    users.groups.quoin-sudo.gid = 952;
 
     environment.etc."sudo.conf".source = sudoConf;
     environment.etc."quoin/sudo.json".source = configFile;
@@ -188,7 +189,7 @@ in
       wantedBy = [ "sockets.target" ];
       socketConfig = {
         ListenStream = "/run/quoin-sudo/gate.sock";
-        SocketUser = "sudo-gate";
+        SocketUser = "quoin-sudo";
         SocketMode = "0600";
         DirectoryMode = "0700";
         FileDescriptorName = "gate";
@@ -213,8 +214,8 @@ in
         ExecStart = utils.escapeSystemdExecArgs [ gate "serve" "-config" "/etc/quoin/sudo.json" ];
         Type = "notify";
         NotifyAccess = "main";
-        User = "sudo-gate";
-        Group = "sudo-gate";
+        User = "quoin-sudo";
+        Group = "quoin-sudo";
         Restart = "always";
         RestartSec = "1s";
         CapabilityBoundingSet = "";

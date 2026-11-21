@@ -1,5 +1,6 @@
 //! Remote mode's ssh-agent client: the first identity among the listed keys
-//! signs the gate's message with a plain SSH_AGENTC_SIGN_REQUEST.
+//! answers the gate's message in the quoin-sudo@quoin extension. Nothing
+//! falls back to a plain sign.
 
 const std = @import("std");
 const fd = @import("fd");
@@ -8,10 +9,15 @@ const fd = @import("fd");
 pub const max_frame = 256 * 1024;
 
 const failure = 5;
+const success = 6;
 const request_identities = 11;
 const identities_answer = 12;
-const sign_request = 13;
 const sign_response = 14;
+const extension = 27;
+const extension_failure = 28;
+
+/// The agent extension a remote sudo is asked through.
+pub const extension_name = "quoin-sudo@quoin";
 
 /// SSH wire encoding: uint32 big-endian, string as uint32 length then bytes.
 pub const Reader = struct {
@@ -65,20 +71,8 @@ fn listed(keys: []const u8, blob: []const u8) ?[]const u8 {
     return null;
 }
 
-pub const Outcome = union(enum) {
-    /// `key` is a slice of the listed keys; `signature` is SIGN_RESPONSE's
-    /// string format | string blob, a slice of the frame buffer.
-    signed: struct { key: []const u8, signature: []const u8 },
-    /// Printable ASCII, for the 'f' record.
-    failed: []const u8,
-};
-
 const hung_up = "the forwarded agent hung up";
 const garbage = "the forwarded agent sent garbage";
-
-fn failed(why: []const u8) Outcome {
-    return .{ .failed = why };
-}
 
 /// One agent frame into `buf`: u32be length, then that many bytes.
 fn frame(s: fd.Sock, buf: *[max_frame]u8) error{ HungUp, Garbage }![]u8 {
@@ -91,58 +85,84 @@ fn frame(s: fd.Sock, buf: *[max_frame]u8) error{ HungUp, Garbage }![]u8 {
     return body;
 }
 
-fn frameFailed(e: error{ HungUp, Garbage }) Outcome {
-    return failed(switch (e) {
+fn frameWhy(e: error{ HungUp, Garbage }) []const u8 {
+    return switch (e) {
         error.HungUp => hung_up,
         error.Garbage => garbage,
-    });
+    };
 }
 
-/// Asks the agent on `s` for its identities and has the first one that is
-/// among `keys` (validKeys) sign `message`, with flags 0. No timeout: a
-/// person answers on the client.
-pub fn sign(s: fd.Sock, keys: []const u8, message: []const u8, buf: *[max_frame]u8) Outcome {
-    s.sendAll(&.{ 0, 0, 0, 1, request_identities }) catch return failed(hung_up);
-    var r: Reader = .{ .b = frame(s, buf) catch |e| return frameFailed(e) };
-    switch (r.byte() orelse return failed(garbage)) {
+/// The first identity of the agent on `s` that is among `keys`
+/// (validKeys), as a slice of `keys`, or why there is none.
+fn identity(s: fd.Sock, keys: []const u8, buf: *[max_frame]u8) union(enum) { key: []const u8, failed: []const u8 } {
+    s.sendAll(&.{ 0, 0, 0, 1, request_identities }) catch return .{ .failed = hung_up };
+    var r: Reader = .{ .b = frame(s, buf) catch |e| return .{ .failed = frameWhy(e) } };
+    switch (r.byte() orelse return .{ .failed = garbage }) {
         identities_answer => {},
-        failure => return failed("the forwarded agent failed"),
-        else => return failed(garbage),
+        failure => return .{ .failed = "the forwarded agent failed" },
+        else => return .{ .failed = garbage },
     }
-    const n = r.int() orelse return failed(garbage);
+    const n = r.int() orelse return .{ .failed = garbage };
     var key: ?[]const u8 = null;
     for (0..n) |_| {
-        const blob = r.string() orelse return failed(garbage);
-        _ = r.string() orelse return failed(garbage);
+        const blob = r.string() orelse return .{ .failed = garbage };
+        _ = r.string() orelse return .{ .failed = garbage };
         if (key == null) key = listed(keys, blob);
     }
-    if (!r.done()) return failed(garbage);
-    const k = key orelse return failed("no listed key in the forwarded agent");
+    if (!r.done()) return .{ .failed = garbage };
+    return .{ .key = key orelse return .{ .failed = "no listed key in the forwarded agent" } };
+}
 
-    const len = 1 + 4 + k.len + 4 + message.len + 4;
-    if (len > max_frame) return failed("message too long for the agent");
-    var head: [9]u8 = undefined;
+/// Whether `sig` is an SSH signature: string format, string blob.
+fn isSignature(sig: []const u8) bool {
+    var inner: Reader = .{ .b = sig };
+    _ = inner.string() orelse return false;
+    _ = inner.string() orelse return false;
+    return inner.done();
+}
+
+pub const Answered = union(enum) {
+    /// `key` is a slice of the listed keys; `answer` the signer's answer
+    /// and `signature` its signature over the message then the answer,
+    /// string format | string blob, each a slice of the frame buffer.
+    answered: struct { key: []const u8, answer: []const u8, signature: []const u8 },
+    /// Printable ASCII, for the 'f' record.
+    failed: []const u8,
+};
+
+/// Asks the agent on `s` for its identities and puts `message` to the
+/// first one that is among `keys` (validKeys) in the quoin-sudo@quoin
+/// extension: byte 27, string name, string key blob, string message. Only
+/// SSH_AGENT_SUCCESS, string answer, string signature, is an answer; a
+/// stock agent, which knows no such extension, fails it, and nothing
+/// falls back to a plain sign. No timeout: a person answers on the client.
+pub fn ask(s: fd.Sock, keys: []const u8, message: []const u8, buf: *[max_frame]u8) Answered {
+    const k = switch (identity(s, keys, buf)) {
+        .key => |k| k,
+        .failed => |why| return .{ .failed = why },
+    };
+    const len = 1 + 4 + extension_name.len + 4 + k.len + 4 + message.len;
+    if (len > max_frame) return .{ .failed = "message too long for the agent" };
+    var head: [9 + extension_name.len + 4]u8 = undefined;
     std.mem.writeInt(u32, head[0..4], @intCast(len), .big);
-    head[4] = sign_request;
-    std.mem.writeInt(u32, head[5..9], @intCast(k.len), .big);
+    head[4] = extension;
+    std.mem.writeInt(u32, head[5..9], extension_name.len, .big);
+    @memcpy(head[9..][0..extension_name.len], extension_name);
+    std.mem.writeInt(u32, head[9 + extension_name.len ..][0..4], @intCast(k.len), .big);
     var mlen: [4]u8 = undefined;
     std.mem.writeInt(u32, &mlen, @intCast(message.len), .big);
-    const flags = [4]u8{ 0, 0, 0, 0 };
-    for ([_][]const u8{ &head, k, &mlen, message, &flags }) |part| s.sendAll(part) catch return failed(hung_up);
+    for ([_][]const u8{ &head, k, &mlen, message }) |part| s.sendAll(part) catch return .{ .failed = hung_up };
 
-    r = .{ .b = frame(s, buf) catch |e| return frameFailed(e) };
-    switch (r.byte() orelse return failed(garbage)) {
-        sign_response => {},
-        failure => return failed("the forwarded agent refused"),
-        else => return failed(garbage),
+    var r: Reader = .{ .b = frame(s, buf) catch |e| return .{ .failed = frameWhy(e) } };
+    switch (r.byte() orelse return .{ .failed = garbage }) {
+        success => {},
+        failure, extension_failure => return .{ .failed = "the forwarded agent refused" },
+        else => return .{ .failed = garbage },
     }
-    const sig = r.string() orelse return failed(garbage);
-    if (!r.done()) return failed(garbage);
-    var inner: Reader = .{ .b = sig };
-    _ = inner.string() orelse return failed(garbage);
-    _ = inner.string() orelse return failed(garbage);
-    if (!inner.done()) return failed(garbage);
-    return .{ .signed = .{ .key = k, .signature = sig } };
+    const answer = r.string() orelse return .{ .failed = garbage };
+    const sig = r.string() orelse return .{ .failed = garbage };
+    if (!r.done() or !isSignature(sig)) return .{ .failed = garbage };
+    return .{ .answered = .{ .key = k, .answer = answer, .signature = sig } };
 }
 
 const testing = std.testing;
@@ -236,58 +256,84 @@ fn listedKeys(out: []u8, keys: []const []const u8) []u8 {
     return out[0..at];
 }
 
-fn signWith(replies: []const []const u8, keys: []const u8) !struct { Outcome, *TestAgent } {
+test "the listed keys parse only as a count of at least one and non-empty blobs" {
+    var kb: [128]u8 = undefined;
+    try testing.expect(validKeys(listedKeys(&kb, &.{ "a", "b" })));
+    try testing.expect(!validKeys(listedKeys(&kb, &.{})));
+    try testing.expect(!validKeys(listedKeys(&kb, &.{""})));
+    try testing.expect(!validKeys("\x00\x00\x00\x01\x00\x00\x00\x02a"));
+    try testing.expect(!validKeys("\x00\x00\x00\x01\x00\x00\x00\x01ab"));
+}
+
+fn askWith(replies: []const []const u8, keys: []const u8) !struct { Answered, *TestAgent } {
     const a = try TestAgent.start("agent-test.sock", replies);
     const s = try fd.connectUnix("agent-test.sock");
     defer s.close();
-    return .{ sign(s, keys, "the message", &test_buf), a };
+    return .{ ask(s, keys, "the message", &test_buf), a };
 }
 
-test "the first offered identity that is listed signs, with flags 0" {
+/// An SSH signature, string format and string blob.
+fn testSignature(out: []u8) []u8 {
+    var at: usize = 0;
+    putString(out, &at, "ssh-ed25519");
+    putString(out, &at, "sigbytes");
+    return out[0..at];
+}
+
+test "the message goes to the first listed identity in the extension, and its answer and signature come back" {
     var kb: [128]u8 = undefined;
     const keys = listedKeys(&kb, &.{ "key-b", "key-c" });
     var ib: [256]u8 = undefined;
     const ids = testFrame(&ib, identities_answer, &.{ "key-a", "comment a", "key-c", "comment c", "key-b", "comment b" });
-    var sb: [256]u8 = undefined;
-    var inner: [64]u8 = undefined;
-    var at: usize = 0;
-    putString(&inner, &at, "ssh-ed25519");
-    putString(&inner, &at, "sigbytes");
-    const resp = testFrame(&sb, sign_response, &.{inner[0..at]});
-    const out, const a = try signWith(&.{ ids, resp }, keys);
+    var sig: [64]u8 = undefined;
+    var rb: [256]u8 = undefined;
+    const reply = testFrame(&rb, success, &.{ "the answer", testSignature(&sig) });
+    const out, const a = try askWith(&.{ ids, reply }, keys);
     defer a.stop();
-    try testing.expectEqualStrings("key-c", out.signed.key);
-    try testing.expectEqualSlices(u8, inner[0..at], out.signed.signature);
+    try testing.expectEqualStrings("key-c", out.answered.key);
+    try testing.expectEqualStrings("the answer", out.answered.answer);
+    try testing.expectEqualSlices(u8, testSignature(&sig), out.answered.signature);
     try testing.expectEqualSlices(u8, &.{request_identities}, a.got[0][0..a.got_len[0]]);
-    try testing.expectEqualSlices(u8, "\x0d\x00\x00\x00\x05key-c\x00\x00\x00\x0bthe message\x00\x00\x00\x00", a.got[1][0..a.got_len[1]]);
+    try testing.expectEqualSlices(u8, "\x1b\x00\x00\x00\x10quoin-sudo@quoin\x00\x00\x00\x05key-c\x00\x00\x00\x0bthe message", a.got[1][0..a.got_len[1]]);
 }
 
-test "a refusal, a failure, EOF, garbage and no listed identity are each a reason" {
+test "a stock agent's failure, an extension failure, a sign response, a bad signature, EOF, garbage and no listed identity are each a reason" {
     var kb: [128]u8 = undefined;
     const keys = listedKeys(&kb, &.{"key-b"});
     var ib: [256]u8 = undefined;
     const ids = testFrame(&ib, identities_answer, &.{ "key-b", "" });
-    var ib2: [256]u8 = undefined;
-    const unlisted = testFrame(&ib2, identities_answer, &.{ "key-a", "" });
+    var sig: [64]u8 = undefined;
+    var sb: [256]u8 = undefined;
+    const sign_resp = testFrame(&sb, sign_response, &.{testSignature(&sig)});
+    var bb: [256]u8 = undefined;
+    const bad_sig = testFrame(&bb, success, &.{ "the answer", "sigbytes" });
+    var nb: [256]u8 = undefined;
+    const no_sig = testFrame(&nb, success, &.{"the answer"});
+    var ub: [256]u8 = undefined;
+    const unlisted = testFrame(&ub, identities_answer, &.{ "key-a", "" });
     const cases = [_]struct { replies: []const []const u8, want: []const u8 }{
         .{ .replies = &.{ ids, "\x00\x00\x00\x01\x05" }, .want = "the forwarded agent refused" },
-        .{ .replies = &.{"\x00\x00\x00\x01\x05"}, .want = "the forwarded agent failed" },
-        .{ .replies = &.{}, .want = hung_up },
+        .{ .replies = &.{ ids, "\x00\x00\x00\x01\x1c" }, .want = "the forwarded agent refused" },
+        .{ .replies = &.{ ids, sign_resp }, .want = garbage },
+        .{ .replies = &.{ ids, bad_sig }, .want = garbage },
+        .{ .replies = &.{ ids, no_sig }, .want = garbage },
+        .{ .replies = &.{ ids, "\x00\x00\x00\x01\x06" }, .want = garbage },
         .{ .replies = &.{ids}, .want = hung_up },
+        .{ .replies = &.{}, .want = hung_up },
         .{ .replies = &.{"\x00\x00\x00\x02\x0c"}, .want = hung_up },
         .{ .replies = &.{"\x7f\xff\xff\xff"}, .want = garbage },
         .{ .replies = &.{"\x00\x00\x00\x01\x0e"}, .want = garbage },
-        .{ .replies = &.{ ids, "\x00\x00\x00\x05\x0e\x00\x00\x00\x00" }, .want = garbage },
+        .{ .replies = &.{"\x00\x00\x00\x01\x05"}, .want = "the forwarded agent failed" },
         .{ .replies = &.{unlisted}, .want = "no listed key in the forwarded agent" },
     };
     for (cases) |cs| {
-        const out, const a = try signWith(cs.replies, keys);
+        const out, const a = try askWith(cs.replies, keys);
         a.stop();
         try testing.expectEqualStrings(cs.want, out.failed);
     }
 }
 
-test "a message too long for an agent frame is refused before it is sent" {
+test "a message too long for the extension's frame is refused before it is sent" {
     var kb: [128]u8 = undefined;
     const keys = listedKeys(&kb, &.{"key-b"});
     var ib: [256]u8 = undefined;
@@ -296,16 +342,7 @@ test "a message too long for an agent frame is refused before it is sent" {
     defer a.stop();
     const s = try fd.connectUnix("agent-test.sock");
     defer s.close();
-    const big = try testing.allocator.alloc(u8, max_frame);
+    const big = try testing.allocator.alloc(u8, max_frame - (1 + 4 + extension_name.len + 4 + 5 + 4) + 1);
     defer testing.allocator.free(big);
-    try testing.expectEqualStrings("message too long for the agent", sign(s, keys, big, &test_buf).failed);
-}
-
-test "the listed keys parse only as a count of at least one and non-empty blobs" {
-    var kb: [128]u8 = undefined;
-    try testing.expect(validKeys(listedKeys(&kb, &.{ "a", "b" })));
-    try testing.expect(!validKeys(listedKeys(&kb, &.{})));
-    try testing.expect(!validKeys(listedKeys(&kb, &.{""})));
-    try testing.expect(!validKeys("\x00\x00\x00\x01\x00\x00\x00\x02a"));
-    try testing.expect(!validKeys("\x00\x00\x00\x01\x00\x00\x00\x01ab"));
+    try testing.expectEqualStrings("message too long for the agent", ask(s, keys, big, &test_buf).failed);
 }

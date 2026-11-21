@@ -150,6 +150,8 @@
           # quoin-sudo's Zig: the audit plugin, its PAM helper and the
           # build-time plugin check. See nix/sudo-zig.nix.
           quoin-sudo-plugin = (import ./nix/sudo-zig.nix { inherit pkgs; }).package;
+          # The signer's presence check, built from the same Zig.
+          quoin-presence = (import ./nix/sudo-zig.nix { inherit pkgs; }).presence;
         } // (releasePackages.${system} or { }));
 
       devShells = forAllSystems (system:
@@ -184,7 +186,7 @@
         {
           # quoin-sudo's Zig, and its tests, the mode parse held to sudo's
           # own parse_args among them, lint, fmt and zwanzig.
-          inherit (self.packages.${system}) quoin-sudo-plugin;
+          inherit (self.packages.${system}) quoin-sudo-plugin quoin-presence;
           sudo-zig = (import ./nix/sudo-zig.nix { inherit pkgs; }).check;
 
           # Every module imported twice, and through default besides, must
@@ -231,6 +233,30 @@
             in
             assert nixpkgs.lib.assertMsg (wrong == [ ]) "tss assertion judged wrongly: ${builtins.toJSON wrong}";
             pkgs.writeText "quoin-signer-tss" "ok";
+
+          # quoin-presence is refused for root, and with any auth rule but
+          # the password's on the quoin-sudo PAM service; it serves the
+          # signer alone, one request at a time, for forUser, and dumps no
+          # core. (The signer's unit needs its release; its VM test checks
+          # it dumps none either.)
+          signer-presence =
+            let
+              eval = extra: (host [ self.nixosModules.signer { services.quoin.signer.enable = true; } extra ]).config;
+              refused = extra: builtins.any (a: ! a.assertion) (eval extra).assertions;
+              on = (eval { }).systemd;
+              wrong = builtins.filter (x: x.got != x.want) [
+                { case = "none"; got = refused { }; want = false; }
+                { case = "root"; got = refused { services.quoin.signer.forUser = "root"; }; want = true; }
+                { case = "extra quoin-sudo auth rule"; got = refused { security.pam.services.quoin-sudo.fprintAuth = true; }; want = true; }
+                { case = "socket"; got = on.sockets.quoin-presence.socketConfig; want = { ListenStream = "/run/quoin-presence/sock"; SocketUser = "quoin-signer"; SocketMode = "0600"; DirectoryMode = "0755"; Accept = false; }; }
+                { case = "for forUser, from the signer's uid"; got = lib.drop 1 (lib.splitString " " on.services.quoin-presence.serviceConfig.ExecStart); want = map builtins.toJSON [ "dan" "951" ]; }
+                { case = "root"; got = on.services.quoin-presence.serviceConfig ? User; want = false; }
+                { case = "no core"; got = on.services.quoin-presence.serviceConfig.LimitCORE; want = 0; }
+                { case = "the signer after it"; got = builtins.elem "quoin-presence.socket" on.services.quoin-signer.after; want = true; }
+              ];
+            in
+            assert nixpkgs.lib.assertMsg (wrong == [ ]) "quoin-presence judged wrongly: ${builtins.toJSON wrong}";
+            pkgs.writeText "quoin-signer-presence" "ok";
 
           # The gate refuses a sudo set-up it cannot gate safely.
           sudo-eval =
@@ -349,7 +375,7 @@
               policy = { courier = "/run/quoin-courier/sock"; allowedSigners = "/etc/quoin/allowed_signers"; fileName = "chase.json"; };
               wrong = builtins.filter (x: ! x.ok) [
                 { case = "allowed signers"; ok = signers.text == "alice namespaces=\"quoin-policy:*\" ${key}\nbob ${key} bob@example\n"; }
-                { case = "config"; ok = settings == { fileName = "chase.json"; allowedSigners = "/etc/quoin/allowed_signers"; peers = { "quoin-signer.service" = "ssh-signer"; "quoin-sudo.service" = "sudo-gate"; }; }; }
+                { case = "config"; ok = settings == { fileName = "chase.json"; allowedSigners = "/etc/quoin/allowed_signers"; peers = { "quoin-signer.service" = "quoin-signer"; "quoin-sudo.service" = "quoin-sudo"; }; }; }
                 { case = "user"; ok = unit.User == "alice" && unit.Group == "users"; }
                 { case = "home"; ok = unit.ReadWritePaths == [ "/home/alice" ] && unit.ProtectHome == "read-only" && unit.ProtectSystem == "strict"; }
                 { case = "network"; ok = unit.PrivateNetwork && unit.RestrictAddressFamilies == [ "AF_UNIX" ]; }

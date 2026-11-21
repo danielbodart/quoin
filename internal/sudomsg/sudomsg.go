@@ -1,5 +1,6 @@
-// Package sudomsg is the message a remote sudo asks the forwarded agent to
-// sign: built by quoin-sudo's gate and read by quoin-signer.
+// Package sudomsg is the message a remote sudo sends the forwarded agent,
+// built by quoin-sudo's gate and read by quoin-signer, and the answer the
+// signer sends back, signed together with the message.
 //
 // It carries what the question is made of, the command, who runs it, the
 // danger and environment lines and the remote process chain, so the signer
@@ -24,6 +25,12 @@
 // The fields are one string so that a signer from before them, which reads
 // the magic as its own and that string as the user, finds nothing after it
 // and refuses the message rather than asking something else.
+//
+// The message goes in the agent extension Extension. The signer answers
+// with an Answer, its magic and then fields by the same rules, and signs
+// Signed: the message verbatim, then the answer. So the signed bytes start
+// with the message's magic, which the signer never signs on a plain sign.
+// New answers are new fields, never a new magic.
 package sudomsg
 
 import (
@@ -31,6 +38,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/danielbodart/quoin/peer"
@@ -40,6 +48,8 @@ import (
 const (
 	Magic     = "quoin-sudo-v1"
 	NonceSize = 32
+	// Extension is the agent extension a remote sudo is asked through.
+	Extension = "quoin-sudo@quoin"
 	// MaxSize is OpenSSH's agent message limit.
 	MaxSize = 256 << 10
 	// MaxFields is the most fields a message has, known or not, and
@@ -49,27 +59,71 @@ const (
 	// Critical marks a key as one a reader that does not know it must
 	// refuse.
 	Critical = "!"
+	// AnswerMagic starts an answer.
+	AnswerMagic = "quoin-sudo-answer-v1"
+	// MaxHops is the most hops an answer names, the signer's most session
+	// binds.
+	MaxHops = 16
 )
 
-// The fields, by name. Each is critical; chain, cut, danger and env are
-// left out when empty.
+// Room is the most bytes a message may take in an extension request whose
+// key blob is longest bytes: MaxSize less the request's type, the
+// extension's name, the key blob and the message's length.
+func Room(longest int) int {
+	return MaxSize - (1 + 4 + len(Extension) + 4 + longest + 4)
+}
+
+// The fields, by name. Each is critical; chain, cut, danger, env, rule and
+// window-key are left out when empty.
 const (
-	FieldArgv   = "argv"   // the command, a list
-	FieldChain  = "chain"  // the chain, leaf first, a list of peer records
-	FieldCut    = "cut"    // empty: command lines were left out of the chain
-	FieldCwd    = "cwd"    // where it runs
-	FieldDanger = "danger" // the danger lines, a list
-	FieldEnv    = "env"    // the variables outside the allowlist, a list
-	FieldRunAs  = "runas"  // as whom it runs
-	FieldUser   = "user"   // who runs it
+	FieldArgv      = "argv"       // the command, a list
+	FieldChain     = "chain"      // the chain, leaf first, a list of peer records
+	FieldCut       = "cut"        // empty: command lines were left out of the chain
+	FieldCwd       = "cwd"        // where it runs
+	FieldDanger    = "danger"     // the danger lines, a list
+	FieldDecision  = "decision"   // how it is asked: "dialog" or "question"
+	FieldEnv       = "env"        // the variables outside the allowlist, a list
+	FieldPresence  = "presence"   // "required" or "none"
+	FieldRule      = "rule"       // the rule that asked: its pattern, then its source
+	FieldRunAs     = "runas"      // as whom it runs
+	FieldUser      = "user"       // who runs it
+	FieldWindow    = "window"     // the most seconds of window, a uint32; 0 is none
+	FieldWindowKey = "window-key" // the key blob whose window made it a question
+)
+
+// The answer's fields, each critical and always there: decision, presence
+// and window, by the names above, and hops.
+const (
+	FieldHops = "hops" // the binds, a list of a host key blob and a forwarded byte
+)
+
+// Decision and Presence are the values of the message's decision and
+// presence fields; Allow, Refuse, Verified and PresenceNone the answer's.
+const (
+	Dialog       = "dialog"   // a presence check, which may open a window
+	Question     = "question" // Allow or Refuse
+	Required     = "required"
+	PresenceNone = "none"
+	Allow        = "allow"
+	Refuse       = "refuse"
+	Verified     = "verified"
 )
 
 var known = map[string]bool{
 	FieldArgv: true, FieldChain: true, FieldCut: true, FieldCwd: true,
-	FieldDanger: true, FieldEnv: true, FieldRunAs: true, FieldUser: true,
+	FieldDanger: true, FieldDecision: true, FieldEnv: true, FieldPresence: true,
+	FieldRule: true, FieldRunAs: true, FieldUser: true, FieldWindow: true,
+	FieldWindowKey: true,
 }
 
-var prefix = lengthPrefixed(Magic)
+var knownAnswer = map[string]bool{
+	FieldDecision: true, FieldHops: true, FieldPresence: true, FieldWindow: true,
+}
+
+var (
+	prefix       = lengthPrefixed(Magic)
+	answerPrefix = lengthPrefixed(AnswerMagic)
+)
 
 func lengthPrefixed(s string) string {
 	return string(binary.BigEndian.AppendUint32(nil, uint32(len(s)))) + s
@@ -91,21 +145,48 @@ type Message struct {
 	// Sid and Cgroup are not carried.
 	Truncated bool
 	Links     []peer.Link
+	// Decision is Dialog, a presence check that may open a window, or
+	// Question, Allow or Refuse with none. Presence is Required when the
+	// answer must say a person was checked, else PresenceNone.
+	Decision string
+	Presence string
+	// Rule is the rule that asked; nil is none.
+	Rule *Rule
+	// Window is the most seconds the answer may open a window for; 0 opens
+	// none.
+	Window uint32
+	// WindowKey is the key blob of the window that made it a question,
+	// the one key whose answer counts; nil is none.
+	WindowKey []byte
 	// Ignored names the unmarked fields Parse did not know and dropped.
 	// Marshal writes none.
 	Ignored []string
 }
 
+// Rule is a rule that asked: its pattern and where it came from, as the
+// question says it.
+type Rule struct {
+	Pattern, Source string
+}
+
 var (
-	errMalformed = errors.New("not a well-formed quoin-sudo message")
-	ErrTooLong   = fmt.Errorf("over the agent's limit of %d bytes", MaxSize)
+	errMalformed       = errors.New("not a well-formed quoin-sudo message")
+	errMalformedAnswer = errors.New("not a well-formed quoin-sudo answer")
+	ErrTooLong         = fmt.Errorf("over the agent's limit of %d bytes", MaxSize)
 )
 
 // CriticalError is a message with a field marked critical that this reader
-// does not know, which it must not ask without.
-type CriticalError struct{ Key string }
+// does not know, which it must not ask without; or, with Answer, such an
+// answer, which it must not take.
+type CriticalError struct {
+	Key    string
+	Answer bool
+}
 
 func (e *CriticalError) Error() string {
+	if e.Answer {
+		return fmt.Sprintf("a quoin-sudo answer with a critical field this reader does not know: %q", e.Key)
+	}
 	return fmt.Sprintf("a quoin-sudo message with a critical field this signer does not know: %q", e.Key)
 }
 
@@ -128,6 +209,17 @@ func (m *Message) Marshal() ([]byte, error) {
 	if err := validLinks(m.Links); err != nil {
 		return nil, err
 	}
+	if m.Decision != Dialog && m.Decision != Question {
+		return nil, fmt.Errorf("a decision of %q", m.Decision)
+	}
+	if m.Presence != Required && m.Presence != PresenceNone {
+		return nil, fmt.Errorf("a presence of %q", m.Presence)
+	}
+	if m.WindowKey != nil {
+		if _, err := ssh.ParsePublicKey(m.WindowKey); err != nil {
+			return nil, fmt.Errorf("a window key: %v", err)
+		}
+	}
 	var f []byte
 	field := func(name string, v []byte) {
 		f = appendString(f, []byte(Critical+name))
@@ -148,11 +240,20 @@ func (m *Message) Marshal() ([]byte, error) {
 	if len(m.Danger) > 0 {
 		field(FieldDanger, appendList(nil, byteSlices(m.Danger)))
 	}
+	field(FieldDecision, []byte(m.Decision))
 	if len(m.Env) > 0 {
 		field(FieldEnv, appendList(nil, byteSlices(m.Env)))
 	}
+	field(FieldPresence, []byte(m.Presence))
+	if m.Rule != nil {
+		field(FieldRule, appendString(appendString(nil, []byte(m.Rule.Pattern)), []byte(m.Rule.Source)))
+	}
 	field(FieldRunAs, []byte(m.RunAs))
 	field(FieldUser, []byte(m.User))
+	field(FieldWindow, binary.BigEndian.AppendUint32(nil, m.Window))
+	if m.WindowKey != nil {
+		field(FieldWindowKey, m.WindowKey)
+	}
 	b := []byte(prefix)
 	b = appendString(b, m.Nonce)
 	b = appendList(b, m.HostKeys)
@@ -188,7 +289,7 @@ func validLinks(links []peer.Link) error {
 // MarshalWithin is Marshal held to limit bytes, and never more than
 // MaxSize. A message over it has its chain's command lines left out one at
 // a time, from the top of the chain down, each blanked in m and Truncated
-// set, until it fits; Argv, Danger and Env are never touched. What still
+// set, until it fits; no other field is ever touched. What still
 // does not fit with every command line out is ErrTooLong.
 func (m *Message) MarshalWithin(limit int) ([]byte, error) {
 	limit = min(limit, MaxSize)
@@ -219,9 +320,10 @@ func (m *Message) MarshalWithin(limit int) ([]byte, error) {
 // The fields are at most MaxFields, each key at most MaxKey bytes, an
 // optional mark and then a name of lower case letters, digits and hyphens,
 // in strictly ascending order of name. A known field must be marked and
-// its value read as its kind, with nothing left over; argv, cwd, runas and
-// user must be there. An unknown field marked critical is a *CriticalError
-// naming it; one unmarked is dropped and named in Ignored.
+// its value read as its kind, with nothing left over; argv, cwd, decision,
+// presence, runas, user and window must be there. An unknown field marked
+// critical is a *CriticalError naming it; one unmarked is dropped and named
+// in Ignored.
 func Parse(b []byte) (*Message, error) {
 	if len(b) > MaxSize || !HasMagic(b) {
 		return nil, errMalformed
@@ -247,45 +349,56 @@ func Parse(b []byte) (*Message, error) {
 }
 
 func (m *Message) readFields(f []byte) error {
+	ignored, err := readFields(f, errMalformed, known, m.setField,
+		FieldArgv, FieldCwd, FieldDecision, FieldPresence, FieldRunAs, FieldUser, FieldWindow)
+	m.Ignored = ignored
+	return err
+}
+
+// readFields reads f's fields by the rules Parse gives, each known one by
+// set, and refuses f without every one of required, wrapping malformed. It
+// returns the unmarked fields it dropped.
+func readFields(f []byte, malformed error, known map[string]bool, set func(name string, value []byte) error, required ...string) ([]string, error) {
 	r := &reader{b: f}
 	seen := map[string]bool{}
 	var last string
+	var ignored []string
 	var critical *CriticalError
 	for n := 0; len(r.b) > 0; n++ {
 		key, value := string(r.bytes()), r.bytes()
 		if r.err != nil || n == MaxFields {
-			return errMalformed
+			return nil, malformed
 		}
 		name, marked := strings.CutPrefix(key, Critical)
 		if !validName(name) || len(key) > MaxKey || (n > 0 && name <= last) {
-			return fmt.Errorf("%w: field %q", errMalformed, key)
+			return nil, fmt.Errorf("%w: field %q", malformed, key)
 		}
 		last = name
 		if !known[name] {
 			if !marked {
-				m.Ignored = append(m.Ignored, name)
+				ignored = append(ignored, name)
 			} else if critical == nil {
 				critical = &CriticalError{Key: name}
 			}
 			continue
 		}
 		if !marked {
-			return fmt.Errorf("%w: field %q is critical", errMalformed, name)
+			return nil, fmt.Errorf("%w: field %q is critical", malformed, name)
 		}
 		seen[name] = true
-		if err := m.setField(name, value); err != nil {
-			return fmt.Errorf("%w: field %q", errMalformed, name)
+		if err := set(name, value); err != nil {
+			return nil, fmt.Errorf("%w: field %q", malformed, name)
 		}
 	}
 	if critical != nil {
-		return critical
+		return nil, critical
 	}
-	for _, name := range []string{FieldArgv, FieldCwd, FieldRunAs, FieldUser} {
+	for _, name := range required {
 		if !seen[name] {
-			return fmt.Errorf("%w: no field %q", errMalformed, name)
+			return nil, fmt.Errorf("%w: no field %q", malformed, name)
 		}
 	}
-	return nil
+	return ignored, nil
 }
 
 func validName(s string) bool {
@@ -301,8 +414,9 @@ func validName(s string) bool {
 }
 
 // setField reads a known field's value into m: a list with at least one
-// entry for argv, chain, danger and env, nothing for cut, any bytes for
-// the rest.
+// entry for argv, chain, danger and env, nothing for cut, one of its values
+// for decision and presence, two strings for rule, a uint32 for window, a
+// public key blob for window-key, any bytes for the rest.
 func (m *Message) setField(name string, value []byte) error {
 	r := &reader{b: value}
 	switch name {
@@ -339,9 +453,183 @@ func (m *Message) setField(name string, value []byte) error {
 		m.RunAs, r.b = string(value), nil
 	case FieldUser:
 		m.User, r.b = string(value), nil
+	case FieldDecision:
+		m.Decision, r.b = string(value), nil
+		if m.Decision != Dialog && m.Decision != Question {
+			return errMalformed
+		}
+	case FieldPresence:
+		m.Presence, r.b = string(value), nil
+		if m.Presence != Required && m.Presence != PresenceNone {
+			return errMalformed
+		}
+	case FieldRule:
+		m.Rule = &Rule{Pattern: string(r.bytes()), Source: string(r.bytes())}
+	case FieldWindow:
+		m.Window = r.uint32()
+	case FieldWindowKey:
+		if _, err := ssh.ParsePublicKey(value); err != nil {
+			return err
+		}
+		m.WindowKey, r.b = value, nil
 	}
 	if r.err != nil || len(r.b) != 0 {
 		return errMalformed
+	}
+	return nil
+}
+
+// Answer is what the signer answers a message with.
+type Answer struct {
+	// Decision is Allow or Refuse.
+	Decision string
+	// Hops are the connection's session binds, the first from the
+	// signer's machine; none is a connection with no bind.
+	Hops []Hop
+	// Presence is Verified when the signer checked a person, else
+	// PresenceNone.
+	Presence string
+	// Window is the seconds of window the person chose; 0 is none.
+	Window uint32
+	// Ignored names the unmarked fields ParseAnswer did not know and
+	// dropped. Marshal writes none.
+	Ignored []string
+}
+
+// Hop is a session bind: the host key it names and whether it forwards.
+type Hop struct {
+	HostKey   []byte
+	Forwarded bool
+}
+
+// Marshal is the answer's bytes: the magic, then its fields, each critical,
+// in ascending order of name, each hop a string of its host key blob and
+// a forwarded byte, 0 or 1. It refuses what ParseAnswer would.
+func (a *Answer) Marshal() ([]byte, error) {
+	if a.Decision != Allow && a.Decision != Refuse {
+		return nil, fmt.Errorf("a decision of %q", a.Decision)
+	}
+	if a.Presence != Verified && a.Presence != PresenceNone {
+		return nil, fmt.Errorf("a presence of %q", a.Presence)
+	}
+	if len(a.Hops) > MaxHops {
+		return nil, fmt.Errorf("%d hops", len(a.Hops))
+	}
+	hops := make([][]byte, len(a.Hops))
+	for i, h := range a.Hops {
+		if len(h.HostKey) == 0 {
+			return nil, fmt.Errorf("hop %d: no host key", i)
+		}
+		fwd := byte(0)
+		if h.Forwarded {
+			fwd = 1
+		}
+		hops[i] = append(appendString(nil, h.HostKey), fwd)
+	}
+	var f []byte
+	field := func(name string, v []byte) {
+		f = appendString(f, []byte(Critical+name))
+		f = appendString(f, v)
+	}
+	field(FieldDecision, []byte(a.Decision))
+	field(FieldHops, appendList(nil, hops))
+	field(FieldPresence, []byte(a.Presence))
+	field(FieldWindow, binary.BigEndian.AppendUint32(nil, a.Window))
+	b := appendString([]byte(answerPrefix), f)
+	if len(b) > MaxSize {
+		return nil, ErrTooLong
+	}
+	return b, nil
+}
+
+// ParseAnswer reads b strictly: the answer's magic, then one string of
+// fields by Parse's rules, with nothing after it and no more than MaxSize
+// in all. Decision, hops, presence and window must be there, each marked
+// and read as its kind: decision Allow or Refuse, presence Verified or
+// PresenceNone, window a uint32, hops at most MaxHops, each a host key blob
+// that is not empty and a forwarded byte, 0 or 1, with nothing after.
+func ParseAnswer(b []byte) (*Answer, error) {
+	if len(b) > MaxSize || !bytes.HasPrefix(b, []byte(answerPrefix)) {
+		return nil, errMalformedAnswer
+	}
+	r := &reader{b: b[len(answerPrefix):]}
+	f := r.bytes()
+	if r.err != nil || len(r.b) != 0 {
+		return nil, errMalformedAnswer
+	}
+	a := &Answer{}
+	ignored, err := readFields(f, errMalformedAnswer, knownAnswer, a.setField, FieldDecision, FieldHops, FieldPresence, FieldWindow)
+	if c := (*CriticalError)(nil); errors.As(err, &c) {
+		c.Answer = true
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.Ignored = ignored
+	return a, nil
+}
+
+func (a *Answer) setField(name string, value []byte) error {
+	r := &reader{b: value}
+	switch name {
+	case FieldDecision:
+		a.Decision, r.b = string(value), nil
+		if a.Decision != Allow && a.Decision != Refuse {
+			return errMalformedAnswer
+		}
+	case FieldPresence:
+		a.Presence, r.b = string(value), nil
+		if a.Presence != Verified && a.Presence != PresenceNone {
+			return errMalformedAnswer
+		}
+	case FieldWindow:
+		a.Window = r.uint32()
+	case FieldHops:
+		n := r.uint32()
+		if n > MaxHops {
+			return errMalformedAnswer
+		}
+		for range n {
+			h := &reader{b: r.bytes()}
+			key := h.bytes()
+			if len(h.b) != 1 || h.b[0] > 1 || len(key) == 0 || h.err != nil {
+				return errMalformedAnswer
+			}
+			a.Hops = append(a.Hops, Hop{HostKey: key, Forwarded: h.b[0] == 1})
+		}
+	}
+	if r.err != nil || len(r.b) != 0 {
+		return errMalformedAnswer
+	}
+	return nil
+}
+
+// Signed is the bytes the signer signs and the gate verifies: message
+// verbatim, starting with its magic, then answer.
+func Signed(message, answer []byte) []byte {
+	return slices.Concat(message, answer)
+}
+
+// Check is nil when a, signed with key, answers m as the gate takes it:
+// key is m's WindowKey when it has one; the decision is Allow; presence is
+// Verified when m requires it; the window is at most m's, and above 0 only
+// for a dialog with presence verified; and the last hop, when there is
+// one, names one of m's host keys. The signature over Signed, and key
+// being a listed key, are the caller's to check.
+func (m *Message) Check(a *Answer, key []byte) error {
+	switch {
+	case m.WindowKey != nil && !bytes.Equal(key, m.WindowKey):
+		return errors.New("signed with a key that is not the window's")
+	case a.Decision != Allow:
+		return errors.New("refused")
+	case m.Presence == Required && a.Presence != Verified:
+		return errors.New("presence was required and not verified")
+	case a.Window > m.Window:
+		return fmt.Errorf("a window of %ds, over the %ds offered", a.Window, m.Window)
+	case a.Window > 0 && (m.Decision != Dialog || a.Presence != Verified):
+		return errors.New("a window with no dialog or no presence verified")
+	case len(a.Hops) > 0 && !slices.ContainsFunc(m.HostKeys, func(k []byte) bool { return bytes.Equal(k, a.Hops[len(a.Hops)-1].HostKey) }):
+		return errors.New("the last hop is not this host")
 	}
 	return nil
 }

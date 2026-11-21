@@ -35,6 +35,8 @@ type Subject struct {
 	// Truncated is that command lines were left out of Chain for the
 	// remote message to fit.
 	Truncated bool
+	// Rule is the rule that asked; nil is none.
+	Rule *sudomsg.Rule
 }
 
 // Options are what is not the sudo's own.
@@ -42,6 +44,9 @@ type Options struct {
 	// Host is the host a remote sudo runs on, as the signer names it;
 	// empty for a local sudo.
 	Host string
+	// Via are the hosts a remote sudo was reached through, from this
+	// machine out, before Host.
+	Via []string
 	// Lead are lines that open the text, as the caller words them.
 	Lead []string
 	// Here is the chain of the process on this machine that asked, for a
@@ -80,6 +85,25 @@ func Level(s Subject) string {
 	return "normal"
 }
 
+// RuleLine opens the question a rule asks.
+func RuleLine(r sudomsg.Rule) string {
+	return fmt.Sprintf("asked, with no password, by the %s %s", galleyask.Clean(r.Source), galleyask.Clean(r.Pattern))
+}
+
+// Route is host, then " via " and the hosts it was reached through, from
+// this machine out: "B via A". Each name is cleaned.
+func Route(host string, via []string) string {
+	route := galleyask.Clean(host)
+	if len(via) > 0 {
+		names := make([]string, len(via))
+		for i, v := range via {
+			names[i] = galleyask.Clean(v)
+		}
+		route += " via " + strings.Join(names, ", ")
+	}
+	return route
+}
+
 // Title is "sudo" and the command, the program by its name.
 func Title(argv []string) string {
 	if len(argv) == 0 {
@@ -92,16 +116,20 @@ func Title(argv []string) string {
 	return "sudo " + strings.Join(words, " ")
 }
 
-// Question is s asked: o.Lead; the danger lines; the chain's warnings; the
-// command laid out; who runs it, as whom and where; the variables. A
-// remote sudo's (o.Host) title ends "on <host>" and its table's summary
-// starts "<host>: "; with o.Here, the asking chain's summary and warnings
+// Question is s asked: the rule's line; o.Lead; the danger lines; the
+// chain's warnings; the command laid out; who runs it, as whom and where;
+// the variables. A remote sudo's (o.Host) title ends "on " and its Route
+// and its table's summary starts "<host>: "; with o.Here, the asking chain's summary and warnings
 // follow, each "from here: ", and its warnings raise a normal level to a
 // warning, never lower one. o.Footer closes it. Every line from s is
 // cleaned. The caller sets Password and Grantable.
 func Question(s Subject, o Options) galleyask.Question {
 	r := chainOf(s)
-	lines := slices.Clone(o.Lead)
+	var lines []string
+	if s.Rule != nil {
+		lines = append(lines, RuleLine(*s.Rule), "")
+	}
+	lines = append(lines, o.Lead...)
 	if len(s.Danger) > 0 {
 		for _, d := range s.Danger {
 			lines = append(lines, galleyask.Clean(d))
@@ -128,9 +156,8 @@ func Question(s Subject, o Options) galleyask.Question {
 	title := Title(s.Argv)
 	table := galleyask.Chain(r)
 	if o.Host != "" {
-		host := galleyask.Clean(o.Host)
-		title += " on " + host
-		table.Summary = host + ": " + table.Summary
+		title += " on " + Route(o.Host, o.Via)
+		table.Summary = galleyask.Clean(o.Host) + ": " + table.Summary
 	}
 	if h := o.Here; h != nil {
 		lines = append(lines, "", Here+galleyask.Summary(h))
@@ -154,14 +181,18 @@ func shortVar(e string) string {
 	return e
 }
 
-// Message is s as a sudomsg.Message, for nonce and the host's keys. Its links
+// Message is s as a sudomsg.Message, for nonce and the host's keys, asked
+// as a dialog with presence required and no window: the caller sets
+// Decision, Presence, Window and WindowKey to what it decided. Its links
 // are a copy of s's chain, which MarshalWithin may blank.
 func Message(s Subject, nonce []byte, hosts [][]byte) *sudomsg.Message {
 	return &sudomsg.Message{
 		Nonce: nonce, HostKeys: hosts,
 		User: s.User, RunAs: s.RunAs, Cwd: s.Cwd, Argv: s.Argv,
 		Danger: s.Danger, Env: s.Env, Truncated: s.Truncated,
-		Links: slices.Clone(chainOf(s).Chain),
+		Links:    slices.Clone(chainOf(s).Chain),
+		Rule:     s.Rule,
+		Decision: sudomsg.Dialog, Presence: sudomsg.Required,
 	}
 }
 
@@ -174,6 +205,6 @@ func FromMessage(m *sudomsg.Message) (Subject, error) {
 	return Subject{
 		Argv: m.Argv, User: m.User, RunAs: m.RunAs, Cwd: m.Cwd,
 		Danger: m.Danger, Env: m.Env, Truncated: m.Truncated,
-		Chain: peer.FromLinks(m.Links),
+		Chain: peer.FromLinks(m.Links), Rule: m.Rule,
 	}, nil
 }

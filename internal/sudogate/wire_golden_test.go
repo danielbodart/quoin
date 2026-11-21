@@ -46,7 +46,7 @@ func TestGoldenRequestsReadAsTheZigMeansThem(t *testing.T) {
 	if r := readGolden(t, "verify-ok.req"); r.kind != kindVerify || !bytes.Equal(r.verified, []byte{1}) {
 		t.Errorf("verify-ok: %+v", r)
 	}
-	if r := readGolden(t, "signature.req"); r.kind != kindSign || string(r.pub) != "kb" || string(r.sig) != "sig" || r.failed != nil {
+	if r := readGolden(t, "signature.req"); r.kind != kindSign || string(r.pub) != "kb" || string(r.answer) != "ans" || string(r.sig) != "sig" || r.failed != nil {
 		t.Errorf("signature: %+v", r)
 	}
 	if r := readGolden(t, "sign-failed.req"); r.kind != kindSign || r.failed == nil || *r.failed != "why?" || r.pub != nil {

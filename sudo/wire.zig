@@ -11,8 +11,9 @@ pub const max_message = 512;
 pub const max_password = 1023;
 pub const header_len = 10;
 const record_head = 5;
-/// An 'S': a key and a signature, each from one agent frame.
-pub const max_signature_request = header_len + 2 * (record_head + agent.max_frame);
+/// An 'S': a key from one agent frame, and an answer and its signature
+/// from another.
+pub const max_signature_request = header_len + 3 * record_head + 2 * agent.max_frame;
 
 pub const Kind = enum(u8) {
     check_in = 'C',
@@ -33,6 +34,7 @@ pub const Tag = enum(u8) {
     truncated = 't',
     remote = 'm',
     key = 'p',
+    answer = 'n',
     agent_signature = 'g',
     agent_failed = 'f',
 };
@@ -90,11 +92,13 @@ pub fn checkIn(buf: *[header_len + record_head]u8, remote: bool) []u8 {
     return o.finish();
 }
 
-/// 'S' with the listed key the agent signed with and its signature.
-pub fn signature(buf: *[max_signature_request]u8, key: []const u8, sig: []const u8) []u8 {
+/// 'S' with the listed key the agent answered with, the answer, and its
+/// signature over the gate's message then the answer.
+pub fn answered(buf: *[max_signature_request]u8, key: []const u8, answer: []const u8, sig: []const u8) []u8 {
     var o: Out = .{ .buf = buf };
     o.header(.signature);
     o.record(.key, key);
+    o.record(.answer, answer);
     o.record(.agent_signature, sig);
     return o.finish();
 }
@@ -192,15 +196,14 @@ pub fn approval(buf: *[max_request]u8, links: []const chain.Link, user_info: CAr
 pub const Reply = enum(u8) { yes = 'Y', no = 'N', password = 'W', message = 'M' };
 
 /// What a reply answers: 'C', 'G' or 'S' (yes or no), a local 'A' or 'V'
-/// (also 'W'), or a remote 'A' ('M' or 'N').
+/// (also 'W'), or a remote 'A' (also 'M'; a yes or a no is a rule's).
 pub const Expect = enum { yes_no, local, remote };
 
 /// The reply kind in `b`, if `e` allows it.
 pub fn replyKind(b: u8, e: Expect) ?Reply {
     const r = std.meta.intToEnum(Reply, b) catch return null;
     const ok = switch (r) {
-        .no => true,
-        .yes => e != .remote,
+        .no, .yes => true,
         .password => e == .local,
         .message => e == .remote,
     };
@@ -276,7 +279,7 @@ test "'C', 'G', 'V' and 'S' frame to their bytes" {
     try testing.expectEqualSlices(u8, golden("check-in-remote.req"), checkIn(&cm, true));
     var v: [header_len + record_head + 1]u8 = undefined;
     try testing.expectEqualSlices(u8, golden("verify-ok.req"), verify(&v, true));
-    try testing.expectEqualSlices(u8, golden("signature.req"), signature(&sig_buf, "kb", "sig"));
+    try testing.expectEqualSlices(u8, golden("signature.req"), answered(&sig_buf, "kb", "ans", "sig"));
     try testing.expectEqualSlices(u8, golden("sign-failed.req"), signFailed(&sig_buf, "why?"));
 }
 
@@ -351,7 +354,7 @@ test "an argv that cannot fit is TooLong" {
 test "a reply is refused when its kind, length or place is wrong" {
     try testing.expectEqual(Reply.yes, replyKind('Y', .yes_no).?);
     try testing.expectEqual(Reply.no, replyKind('N', .remote).?);
-    try testing.expect(replyKind('Y', .remote) == null);
+    try testing.expectEqual(Reply.yes, replyKind('Y', .remote).?);
     try testing.expect(replyKind('W', .yes_no) == null);
     try testing.expect(replyKind('W', .remote) == null);
     try testing.expect(replyKind('M', .local) == null);

@@ -68,6 +68,8 @@ type harness struct {
 	log        *lockedBuffer
 	github     ssh.Signer
 	server     ssh.Signer
+	// secrets are what the fake presence helper was sent, in turn.
+	secrets chan presented
 	// loginSigner and policySigner say whether the peer is the main
 	// process of a unit listed as one.
 	loginSigner  atomic.Bool
@@ -91,6 +93,7 @@ func newHarness(t *testing.T, keys int, configure func(*Server)) *harness {
 		t: t, path: filepath.Join(dir, "agent"),
 		requesters: make(chan *peer.Requester, 16), questions: make(chan *asked, 16),
 		log: &lockedBuffer{}, github: hostKey(t), server: hostKey(t),
+		secrets: make(chan presented, 16),
 	}
 	known := "github.com " + string(ssh.MarshalAuthorizedKey(h.github.PublicKey())) +
 		"@cert-authority * " + string(ssh.MarshalAuthorizedKey(h.server.PublicKey()))
@@ -111,6 +114,7 @@ func newHarness(t *testing.T, keys int, configure func(*Server)) *harness {
 		},
 	}
 	h.moved = sync.NewCond(&h.mu)
+	h.s.Presence = h.presence(filepath.Join(dir, "presence"))
 	h.s.loginSigner = func(*peer.Requester) bool { return h.loginSigner.Load() }
 	h.s.policySigner = func(*peer.Requester) bool { return h.policySigner.Load() }
 	for range keys {
@@ -316,7 +320,7 @@ func TestASignForAnotherSessionThanTheLastBindIsRefused(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	h.loginSigner.Store(true)
 	c := h.dial(claude(100))
-	if err := c.bind(t, h.github, []byte("first"), false); err != nil {
+	if err := c.bind(t, h.github, []byte("first"), true); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.bind(t, h.github, []byte("second"), false); err != nil {
@@ -741,11 +745,11 @@ func TestAConnectionKeepsAtMostSixteenBinds(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	c := h.dial(claude(100))
 	for i := range maxBinds {
-		if err := c.bind(t, h.github, []byte{byte(i)}, false); err != nil {
+		if err := c.bind(t, h.github, []byte{byte(i)}, true); err != nil {
 			t.Fatalf("bind %d: %v", i, err)
 		}
 	}
-	if err := c.bind(t, h.github, []byte("one more"), false); err == nil {
+	if err := c.bind(t, h.github, []byte("one more"), true); err == nil {
 		t.Error("a seventeenth bind was kept")
 	}
 }
@@ -822,21 +826,32 @@ func FuzzNoAgentMessageCrashesTheParser(f *testing.F) {
 	remote, err := (&sudomsg.Message{
 		Nonce: make([]byte, sudomsg.NonceSize), HostKeys: [][]byte{host.PublicKey().Marshal()},
 		User: "dan", RunAs: "root", Cwd: "/", Argv: []string{"/bin/id"},
+		Decision: sudomsg.Dialog, Presence: sudomsg.Required,
 	}).Marshal()
 	if err != nil {
 		f.Fatal(err)
 	}
 	f.Add(append(bind, signMsg(key, remote)...))
 	f.Add(signMsg(key, remote))
+	sudoExt := func(msg []byte) []byte {
+		return frame(27, ssh.Marshal(struct {
+			Typ  string
+			Rest []byte `ssh:"rest"`
+		}{sudomsg.Extension, ssh.Marshal(struct{ Key, Msg []byte }{key.Marshal(), msg})}))
+	}
+	f.Add(append(bind, sudoExt(remote)...))
+	f.Add(sudoExt(remote))
 	remoteChain, err := (&sudomsg.Message{
 		Nonce: make([]byte, sudomsg.NonceSize), HostKeys: [][]byte{host.PublicKey().Marshal()},
-		User: "dan", RunAs: "root", Cwd: "/", Argv: []string{"/bin/id"}, Danger: []string{"why"},
+		User: "dan", RunAs: "root", Cwd: "/", Argv: []string{"/bin/id"},
+		Decision: sudomsg.Dialog, Presence: sudomsg.Required, Danger: []string{"why"},
 		Links: claude(100).Chain,
 	}).Marshal()
 	if err != nil {
 		f.Fatal(err)
 	}
 	f.Add(append(bind, signMsg(key, remoteChain)...))
+	f.Add(append(bind, sudoExt(remoteChain)...))
 	f.Add(append(bind, signMsg(key, make([]byte, 32))...))
 	for _, name := range []string{"sshsig-git.bin", "sshsig-file.bin"} {
 		b, err := os.ReadFile(filepath.Join("testdata", name))

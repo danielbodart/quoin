@@ -27,9 +27,10 @@ about the rest.
   question inside the window, and a danger question, never a window, for a
   command that touches what guards the machine. Exec rules, the host's and a
   signed project's, allow, ask about or refuse a command with no password.
-  Over `ssh -A`, a sudo on another machine is approved by your own signer,
-  asked on your own screen. A sudo in a terminal is stock sudo; the gate
-  never sees it. See [docs/sudo.md](docs/sudo.md).
+  Over `ssh -A`, a sudo on another machine is decided the same way and
+  asked on your own screen by your own signer, your password checked on
+  your machine, and approved by its signed answer; a stock agent cannot
+  approve one. A sudo in a terminal is stock sudo; the gate never sees it. See [docs/sudo.md](docs/sudo.md).
 - **quoin-courier** carries a project's signed policy file, `chase.json`
   say, between your home and the gatekeepers, which run as their own users
   and cannot read it. It runs as you with no network, tells a gatekeeper
@@ -98,15 +99,15 @@ being a particular program: a unit is trusted only when the host names it.
 
 Then point `SSH_AUTH_SOCK` at `/run/quoin-signer/agent`, move a key made by
 `ssh-tpm-keygen` into `/var/lib/quoin-signer`, and let galley take questions
-from `ssh-signer` and `sudo-gate` ([docs/signer.md](docs/signer.md#setup),
+from `quoin-signer` and `quoin-sudo` ([docs/signer.md](docs/signer.md#setup),
 [docs/sudo.md](docs/sudo.md#setup)).
 
 ## NixOS modules
 
 | Module | Options | Runs |
 |---|---|---|
-| `nixosModules.signer` | `services.quoin.signer`: `enable`, `forUser`, `terminal`, `sshsig`, `ssh.hosts`, `loginSigners`, `policySigners` | `quoin-signer.socket` at `/run/quoin-signer/agent`, `quoin-signer.service` as `ssh-signer`, `quoin-signer-keygen.service` |
-| `nixosModules.sudo` | `services.quoin.sudo`: `enable`, `forUser`, `remoteKeys`, `danger`, `exec` | the plugin line in `/etc/sudo.conf`, the PAM rule and the `quoin-sudo` PAM service, `quoin-sudo.socket` at `/run/quoin-sudo/gate.sock`, `quoin-sudo.service` as `sudo-gate` |
+| `nixosModules.signer` | `services.quoin.signer`: `enable`, `forUser`, `terminal`, `sshsig`, `ssh.hosts`, `loginSigners`, `policySigners` | `quoin-signer.socket` at `/run/quoin-signer/agent`, `quoin-signer.service` as `quoin-signer`, `quoin-presence.socket` at `/run/quoin-presence/sock` and `quoin-presence.service` as root, `quoin-signer-keygen.service` |
+| `nixosModules.sudo` | `services.quoin.sudo`: `enable`, `forUser`, `remoteKeys`, `danger`, `exec` | the plugin line in `/etc/sudo.conf`, the PAM rule and the `quoin-sudo` PAM service, `quoin-sudo.socket` at `/run/quoin-sudo/gate.sock`, `quoin-sudo.service` as `quoin-sudo` |
 | `nixosModules.policy` | `services.quoin.policy`: `fileName`, `allowedSigners`, `courier.enable`, `courier.forUser`, `courier.peers` | `/etc/quoin/allowed_signers`, `quoin-courier.socket` at `/run/quoin-courier/sock`, `quoin-courier.service` as `forUser` |
 | `nixosModules.default` | all three | |
 
@@ -136,7 +137,7 @@ check or speak what quoin does in the same way:
 ## Threat model
 
 In short: a program you run, a claude or anything it starts, may be hostile
-and runs as you. It cannot read the TPM key, which only `ssh-signer` can
+and runs as you. It cannot read the TPM key, which only `quoin-signer` can
 open; it cannot forge which process asked, which the signer and the gate read
 from the kernel (peer credentials, pidfds, cgroups) rather than from the
 program; it cannot answer its own question, since only your `galley.service`
@@ -157,7 +158,8 @@ design, written while these lived in frisket, is
   `fakegalley` and `agenttamper`, which are the release's own static
   binaries, fetched by hash, not built again; `quoin-sudo-plugin`, built
   from source by nixpkgs (nixos-26.05, Zig 0.15) against the host's sudo and
-  PAM, and in the `danielbodart` Cachix cache; `nixosModules.default` (the
+  PAM, and in the `danielbodart` Cachix cache; `quoin-presence`, the
+  signer's password check, built from source the same way; `nixosModules.default` (the
   signer, the sudo gate and the policy), each also on its own, and
   `darwinModules.sudo`. Only a release tag has the Go packages: its own
   commit, a child of the released trunk commit, adds `nix/release.json`

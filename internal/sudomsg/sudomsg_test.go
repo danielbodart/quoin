@@ -28,7 +28,12 @@ func hostKey(t testing.TB, seed byte) []byte {
 	return pub.Marshal()
 }
 
-// example is a claude's sudo under an ssh login, its chain leaf first.
+// windowKey is the key whose window example is asked inside.
+func windowKey(t testing.TB) []byte { return hostKey(t, 9) }
+
+// example is a claude's sudo under an ssh login, its chain leaf first,
+// with every field: a question a rule asked inside a window, which no gate
+// sends all at once.
 func example(t testing.TB) *Message {
 	return &Message{
 		Nonce:    bytes.Repeat([]byte{0xab}, NonceSize),
@@ -47,15 +52,25 @@ func example(t testing.TB) *Message {
 			{Pid: 692, PPid: 1, Start: 100, Comm: "sshd", Cmdline: []string{"sshd: /nix/store/sshd -D -f /etc/ssh/sshd_config [listener]"}},
 			{Pid: 1, Start: 1, Comm: "systemd", Cmdline: []string{"/run/current-system/systemd/lib/systemd/systemd"}},
 		},
+		Decision:  Question,
+		Presence:  PresenceNone,
+		Rule:      &Rule{Pattern: "systemctl stop *", Source: "project rule"},
+		WindowKey: windowKey(t),
 	}
 }
 
-func TestTheMessageEncodesToTheGoldenBytesAndParsesBackFieldForField(t *testing.T) {
-	b, err := example(t).Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join("testdata", "message.bin")
+// dialog is example asked as a dialog that may open an hour's window, with
+// no rule and no window key.
+func dialog(t testing.TB) *Message {
+	m := example(t)
+	m.Decision, m.Presence, m.Rule, m.Window, m.WindowKey = Dialog, Required, nil, 3600, nil
+	return m
+}
+
+// golden is b checked against, or with -update written to, testdata/name.
+func golden(t *testing.T, name string, b []byte) []byte {
+	t.Helper()
+	path := filepath.Join("testdata", name)
 	if *update {
 		if err := os.WriteFile(path, b, 0o644); err != nil {
 			t.Fatal(err)
@@ -66,34 +81,51 @@ func TestTheMessageEncodesToTheGoldenBytesAndParsesBackFieldForField(t *testing.
 		t.Fatal(err)
 	}
 	if !bytes.Equal(b, want) {
-		t.Fatalf("got\n%x\nwant\n%x", b, want)
+		t.Fatalf("%s: got\n%x\nwant\n%x", name, b, want)
 	}
-	if !bytes.HasPrefix(b, []byte("\x00\x00\x00\x0dquoin-sudo-v1")) {
-		t.Errorf("starts %x", b[:17])
-	}
-	m, err := Parse(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(m, example(t)) {
-		t.Errorf("parsed %+v", m)
+	return want
+}
+
+func TestTheMessageEncodesToTheGoldenBytesAndParsesBackFieldForField(t *testing.T) {
+	for name, m := range map[string]*Message{"message.bin": example(t), "message-dialog.bin": dialog(t)} {
+		b, err := m.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := golden(t, name, b)
+		if !bytes.HasPrefix(b, []byte("\x00\x00\x00\x0dquoin-sudo-v1")) {
+			t.Errorf("%s: starts %x", name, b[:17])
+		}
+		back, err := Parse(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(back, m) {
+			t.Errorf("%s: parsed %+v", name, back)
+		}
 	}
 }
 
-// The darwin plugin builds the message in Zig, held to a copy of this
-// package's golden in sudo/testdata/sudomsg, inside the Zig package's root
-// where its tests can embed it. The copy is this one, byte for byte.
-func TestTheZigCopyOfTheGoldenIsThisPackages(t *testing.T) {
-	ours, err := os.ReadFile(filepath.Join("testdata", "message.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	zigs, err := os.ReadFile(filepath.Join("..", "..", "sudo", "testdata", "sudomsg", "message.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(ours, zigs) {
-		t.Fatal("sudo/testdata/sudomsg/message.bin is not internal/sudomsg/testdata/message.bin: copy it")
+// zigCopies are the goldens the Zig mirror holds itself to.
+var zigCopies = []string{"message.bin", "message-dialog.bin", "answer.bin", "answer-cases.bin"}
+
+// The Zig mirror builds the message and reads the answer, held to copies
+// of this package's goldens in sudo/testdata/sudomsg, inside the Zig
+// package's root where its tests can embed them. Each copy is this one,
+// byte for byte.
+func TestTheZigCopiesOfTheGoldensAreThisPackages(t *testing.T) {
+	for _, name := range zigCopies {
+		ours, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		zigs, err := os.ReadFile(filepath.Join("..", "..", "sudo", "testdata", "sudomsg", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(ours, zigs) {
+			t.Errorf("sudo/testdata/sudomsg/%s is not internal/sudomsg/testdata/%s: copy it", name, name)
+		}
 	}
 }
 
@@ -173,7 +205,30 @@ func list(ss ...string) string { return string(appendList(nil, byteSlices(ss))) 
 
 // required is the fields every message has, by key and value.
 func required() []string {
-	return []string{"!argv", list("/bin/true"), "!cwd", "/", "!runas", "root", "!user", "dan"}
+	return []string{
+		"!argv", list("/bin/true"), "!cwd", "/", "!decision", Dialog, "!presence", Required,
+		"!runas", "root", "!user", "dan", "!window", "\x00\x00\x00\x00",
+	}
+}
+
+// without is kv without the field named name.
+func without(kv []string, name string) []string {
+	for i := 0; i < len(kv); i += 2 {
+		if strings.TrimPrefix(kv[i], Critical) == name {
+			return slices.Delete(slices.Clone(kv), i, i+2)
+		}
+	}
+	panic(name)
+}
+
+// replaced is kv with the field named name's key and value set.
+func replaced(kv []string, name, key, value string) []string {
+	for i := 0; i < len(kv); i += 2 {
+		if strings.TrimPrefix(kv[i], Critical) == name {
+			return slices.Replace(slices.Clone(kv), i, i+2, key, value)
+		}
+	}
+	panic(name)
 }
 
 // with is required's fields with kv placed in name order.
@@ -265,13 +320,26 @@ func TestAMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 		"trailing bytes":        append(bytes.Clone(good), 0),
 		"another magic":         append([]byte("\x00\x00\x00\x0dquoin-sudo-v2"), good[17:]...),
 		"empty":                 nil,
-		"no argv":               enc(t, required()[2:]...),
-		"no cwd":                enc(t, slices.Delete(required(), 2, 4)...),
-		"no runas":              enc(t, slices.Delete(required(), 4, 6)...),
-		"no user":               enc(t, required()[:6]...),
-		"an empty argv":         enc(t, slices.Replace(required(), 1, 2, list())...),
-		"argv unmarked":         enc(t, slices.Replace(required(), 0, 1, "argv")...),
-		"user unmarked":         enc(t, slices.Replace(required(), 6, 7, "user")...),
+		"no argv":               enc(t, without(required(), "argv")...),
+		"no cwd":                enc(t, without(required(), "cwd")...),
+		"no decision":           enc(t, without(required(), "decision")...),
+		"no presence":           enc(t, without(required(), "presence")...),
+		"no runas":              enc(t, without(required(), "runas")...),
+		"no user":               enc(t, without(required(), "user")...),
+		"no window":             enc(t, without(required(), "window")...),
+		"an empty argv":         enc(t, replaced(required(), "argv", "!argv", list())...),
+		"argv unmarked":         enc(t, replaced(required(), "argv", "argv", list("/bin/true"))...),
+		"user unmarked":         enc(t, replaced(required(), "user", "user", "dan")...),
+		"decision unmarked":     enc(t, replaced(required(), "decision", "decision", Dialog)...),
+		"another decision":      enc(t, replaced(required(), "decision", "!decision", "allow")...),
+		"an empty decision":     enc(t, replaced(required(), "decision", "!decision", "")...),
+		"another presence":      enc(t, replaced(required(), "presence", "!presence", Verified)...),
+		"a short window":        enc(t, replaced(required(), "window", "!window", "\x00\x00\x00")...),
+		"a long window":         enc(t, replaced(required(), "window", "!window", "\x00\x00\x00\x00\x00")...),
+		"a rule with one":       enc(t, with("!rule", string(appendString(nil, []byte("x"))))...),
+		"a rule with more":      enc(t, with("!rule", string(appendString(appendString(nil, []byte("x")), []byte("y")))+"z")...),
+		"a bad window key":      enc(t, with("!window-key", "\x00\x00\x00\x07ssh-rsa")...),
+		"an empty window key":   enc(t, with("!window-key", "")...),
 		"out of order":          enc(t, slices.Concat(required()[2:4], required()[:2], required()[4:])...),
 		"a field twice":         enc(t, slices.Concat(required()[:2], required())...),
 		"marked and not":        enc(t, with("color", "x", "!color", "y")...),
@@ -289,14 +357,17 @@ func TestAMessageThatDoesNotParseStrictlyIsRefused(t *testing.T) {
 		"17 links":              enc(t, with("!chain", string(appendList(nil, slices.Repeat([][]byte{rec}, peer.MaxLinks+1))))...),
 		"a link cut short":      enc(t, with("!chain", string(appendList(nil, [][]byte{rec[:10]})))...),
 		"a link with more":      enc(t, with("!chain", string(appendList(nil, [][]byte{append(slices.Clone(rec), 0)})))...),
-		"more than MaxFields":   enc(t, slices.Concat(required(), many[:2*(MaxFields-3)])...),
+		"more than MaxFields":   enc(t, slices.Concat(required(), many[:2*(MaxFields-len(required())/2+1)])...),
 	} {
 		if m, err := Parse(b); err == nil {
 			t.Errorf("%s: parsed %+v", name, m)
 		}
 	}
-	if _, err := Parse(enc(t, slices.Concat(required(), many[:2*(MaxFields-4)])...)); err != nil {
+	if _, err := Parse(enc(t, slices.Concat(required(), many[:2*(MaxFields-len(required())/2)])...)); err != nil {
 		t.Errorf("exactly MaxFields: %v", err)
+	}
+	if m, err := Parse(enc(t, with("!rule", string(appendString(appendString(nil, nil), nil)))...)); err != nil || m.Rule == nil || *m.Rule != (Rule{}) {
+		t.Errorf("a rule of two empty strings: %+v, %v", m, err)
 	}
 	if m, err := Parse(enc(t, with("!cut", "")...)); err != nil || !m.Truncated || m.Links != nil {
 		t.Errorf("cut with no chain: %+v, %v", m, err)
@@ -313,14 +384,20 @@ func fieldsLen(b []byte) int {
 
 func TestMarshalRefusesWhatParseWould(t *testing.T) {
 	for name, f := range map[string]func(*Message){
-		"a short nonce":   func(m *Message) { m.Nonce = m.Nonce[:1] },
-		"no host keys":    func(m *Message) { m.HostKeys = nil },
-		"no command":      func(m *Message) { m.Argv = nil },
-		"too long":        func(m *Message) { m.Argv = append(m.Argv, strings.Repeat("x", MaxSize)) },
-		"17 links":        func(m *Message) { m.Links = slices.Concat(m.Links, m.Links, m.Links)[:peer.MaxLinks+1] },
-		"a long comm":     func(m *Message) { m.Links[0].Comm = strings.Repeat("c", peer.MaxComm+1) },
-		"a long cmdline":  func(m *Message) { m.Links[0].Cmdline = []string{strings.Repeat("a", 4000), strings.Repeat("b", 96)} },
-		"a NUL in an arg": func(m *Message) { m.Links[0].Cmdline = []string{"a\x00b"} },
+		"a short nonce":       func(m *Message) { m.Nonce = m.Nonce[:1] },
+		"no host keys":        func(m *Message) { m.HostKeys = nil },
+		"no command":          func(m *Message) { m.Argv = nil },
+		"too long":            func(m *Message) { m.Argv = append(m.Argv, strings.Repeat("x", MaxSize)) },
+		"17 links":            func(m *Message) { m.Links = slices.Concat(m.Links, m.Links, m.Links)[:peer.MaxLinks+1] },
+		"a long comm":         func(m *Message) { m.Links[0].Comm = strings.Repeat("c", peer.MaxComm+1) },
+		"a long cmdline":      func(m *Message) { m.Links[0].Cmdline = []string{strings.Repeat("a", 4000), strings.Repeat("b", 96)} },
+		"a NUL in an arg":     func(m *Message) { m.Links[0].Cmdline = []string{"a\x00b"} },
+		"no decision":         func(m *Message) { m.Decision = "" },
+		"an allow":            func(m *Message) { m.Decision = Allow },
+		"no presence":         func(m *Message) { m.Presence = "" },
+		"verified":            func(m *Message) { m.Presence = Verified },
+		"a bad window key":    func(m *Message) { m.WindowKey = []byte("\x00\x00\x00\x07ssh-rsa") },
+		"an empty window key": func(m *Message) { m.WindowKey = []byte{} },
 	} {
 		m := example(t)
 		f(m)
@@ -342,12 +419,12 @@ func TestMarshalRefusesWhatParseWould(t *testing.T) {
 
 func TestMarshalLeavesOutWhatIsEmptyAndParseReadsItBackEmpty(t *testing.T) {
 	m := example(t)
-	m.Danger, m.Env, m.Links = nil, nil, nil
+	m.Danger, m.Env, m.Links, m.Rule, m.WindowKey = nil, nil, nil, nil, nil
 	b, err := m.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"!chain", "!cut", "!danger", "!env"} {
+	for _, key := range []string{"!chain", "!cut", "!danger", "!env", "!rule", "!window-key"} {
 		if bytes.Contains(b, []byte(key)) {
 			t.Errorf("%s written", key)
 		}

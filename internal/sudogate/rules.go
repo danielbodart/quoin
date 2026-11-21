@@ -14,7 +14,6 @@ import (
 	"sync"
 
 	"github.com/danielbodart/quoin/courier"
-	"github.com/danielbodart/quoin/internal/galleyask"
 	"github.com/danielbodart/quoin/peer"
 	"github.com/danielbodart/quoin/projpolicy"
 	"github.com/danielbodart/quoin/sudo"
@@ -319,9 +318,4 @@ func (g *Gate) policyDefaults() {
 	if g.signers == nil {
 		g.signers = func() ([]byte, error) { return os.ReadFile(g.Policy.AllowedSigners) }
 	}
-}
-
-// ruleLine opens the question an ask rule puts.
-func (r *ruled) line() string {
-	return fmt.Sprintf("asked, with no password, by the %s %s", r.source, galleyask.Clean(r.Pattern))
 }

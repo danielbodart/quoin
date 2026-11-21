@@ -92,6 +92,9 @@ func subjects(t *testing.T) map[string]Subject {
 			s.Danger = []string{"touches a unit that guards this machine", "runs /tmp/x, outside the root-owned directories"}
 		}),
 		"variables": with(func(s *Subject) { s.Env = []string{"LD_PRELOAD=/tmp/x.so", "FOO=" + strings.Repeat("y", 200)} }),
+		"a rule": with(func(s *Subject) {
+			s.Rule = &sudomsg.Rule{Pattern: "systemctl restart *", Source: "project rule"}
+		}),
 		"cut": with(func(s *Subject) {
 			s.Chain = peer.FromLinks(server()[:2])
 		}),
@@ -157,6 +160,51 @@ func TestARemoteSudoIsAskedAsTheHostAsksItLocallyButForWhereAndFromWhere(t *test
 				t.Errorf("%+v", r)
 			}
 		})
+	}
+}
+
+func TestARuleOpensTheQuestionAsTheGateHasAlwaysWordedIt(t *testing.T) {
+	q := Question(subjects(t)["a rule"], Options{Lead: []string{"lead"}})
+	want := "asked, with no password, by the project rule systemctl restart *\n\nlead\n" + systemctl + " restart foo"
+	if !strings.HasPrefix(q.Text, want) {
+		t.Errorf("text\n%s", q.Text)
+	}
+	if got := RuleLine(sudomsg.Rule{Pattern: "a\x1b[2Jb", Source: "host\nrule"}); strings.ContainsAny(got, "\x1b\n") {
+		t.Errorf("not cleaned: %q", got)
+	}
+}
+
+func TestTheTitleNamesTheWholeRouteAndTheTableOnlyTheHost(t *testing.T) {
+	q := remote(t, subjects(t)["plain"], Options{Host: "server", Via: []string{"jump", "bastion"}})
+	if q.Title != "sudo systemctl restart foo on server via jump, bastion" {
+		t.Errorf("title %q", q.Title)
+	}
+	if !strings.HasPrefix(q.Chain.Summary, "server: ") {
+		t.Errorf("summary %q", q.Chain.Summary)
+	}
+	for _, c := range []struct {
+		host string
+		via  []string
+		want string
+	}{
+		{"b", nil, "b"},
+		{"b", []string{"a"}, "b via a"},
+		{"c", []string{"a", "b"}, "c via a, b"},
+		{"b\x1b[2J", []string{"a\n"}, `b\u001b[2J via a\u000a`},
+	} {
+		if got := Route(c.host, c.via); got != c.want {
+			t.Errorf("Route(%q, %q) = %q, want %q", c.host, c.via, got, c.want)
+		}
+	}
+}
+
+func TestTheMessageAsksADialogWithPresenceAndNoWindowUntilTheCallerSaysOtherwise(t *testing.T) {
+	m := Message(subjects(t)["a rule"], make([]byte, sudomsg.NonceSize), [][]byte{hostKey(t)})
+	if m.Decision != sudomsg.Dialog || m.Presence != sudomsg.Required || m.Window != 0 || m.WindowKey != nil {
+		t.Errorf("%+v", m)
+	}
+	if m.Rule == nil || m.Rule.Pattern != "systemctl restart *" {
+		t.Errorf("rule %+v", m.Rule)
 	}
 }
 

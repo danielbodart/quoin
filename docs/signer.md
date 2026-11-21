@@ -42,9 +42,12 @@ Then point the user's `SSH_AUTH_SOCK` at `/run/quoin-signer/agent`, and
 let galley take questions from the signer:
 
 ```nix
-services.galley.services = { ssh-signer = "SSH signer"; };   # home-manager
+services.galley.services = { quoin-signer = "SSH signer"; };   # home-manager
 systemd.tmpfiles.rules = [ "d /run/galley-ask 0755 alice alice -" ];
 ```
+
+The signer's user was `ssh-signer`. Its uid, 951, is the same, so the key
+files it owns still work, but galley's services must name `quoin-signer`.
 
 The signer starts with no keys, and on its first connection, which makes
 its key directory. Start it, then move a key made by stock `ssh-tpm-keygen`
@@ -52,12 +55,12 @@ into place:
 
 ```
 sudo systemctl start quoin-signer
-sudo install -o ssh-signer -g ssh-signer -m 0600 ~/.ssh/id_ecdsa.tpm /var/lib/quoin-signer/
+sudo install -o quoin-signer -g quoin-signer -m 0600 ~/.ssh/id_ecdsa.tpm /var/lib/quoin-signer/
 sudo systemctl restart quoin-signer
 ssh-add -l
 ```
 
-Only `ssh-signer` may open the TPM: evaluation fails if any normal user is
+Only `quoin-signer` may open the TPM: evaluation fails if any normal user is
 in `tss`. Log out and in after leaving it.
 
 ## Options
@@ -132,8 +135,63 @@ one whose word that a person approved a change is taken.
 
 Beyond these, a forwarded sign (`ssh -A`) is asked unless it came through
 `ssh.forwardedThrough` (below), and nothing is refused unasked but an SSHSIG in a `quoin-policy` namespace, which `check`
-also refuses as an `sshsig` key, and a `policy-sign` from another user
-namespace.
+also refuses as an `sshsig` key, a `policy-sign` from another user
+namespace, a remote sudo that is not asked as below, and any plain sign
+over data that starts with a remote sudo's magic (`quoin-sudo-v1`).
+
+### Remote sudo
+
+A remote sudo ([sudo.md](sudo.md#remote-mode)) comes as the agent
+extension `quoin-sudo@quoin`: a key and the gate's message. It is asked
+every time, never signed silently or by a grant, and answered with an
+answer record signed together with the message (package `sudomsg`). It is
+refused unasked when:
+
+- the message does not parse strictly, has a critical field this signer
+  does not know, or has no `!decision`, `!presence` or `!window`;
+- on a connection with a bind, the last bind does not forward or names
+  none of the message's host keys;
+- on a connection with no bind, a host key it names is not this machine's
+  own (`/etc/ssh/ssh_host_*_key.pub`, read each time), or the process that
+  connected is not a mosey client (`mosey`, or `.mosey-wrapped`, by its
+  name). A mosey session whose attached client runs in a terminal here
+  relays that client's agent with no bind; an `ssh -A` that sends no
+  session-bind, or another forwarder, may bring it from far off;
+- this agent does not hold the key;
+- it is a question that requires presence, or its `!window-key` is not the
+  key: the gate would take neither answer.
+
+It is asked as its host would ask it, by the gate's builder
+(`internal/sudoq`): the rule that asked, if any, first; the host's chain
+the table; the title "on B via A", the route from the binds' names in
+`ssh_known_hosts`; this machine's chain on `from here: ` lines and the key
+last. With no bind it is this machine's own sudo, asked as its gate asks
+a local one: no host, no `from here: ` lines, no key.
+
+- A **question** is Allow or Refuse. Allow answers presence `none`, no
+  window.
+- A **dialog** takes the password, as the gate's dialog does, and offers
+  "remember for" when `!window` is above 0, at most that long. The signer
+  sends the password to `quoin-presence` (`/run/quoin-presence/sock`: a
+  version byte, 1, a big-endian uint16 length, the password, at most 1023
+  bytes, no NUL or newline; it answers `P` or `F`) and zeroes it. A wrong
+  password brings the dialog back, saying so; an empty one, or one that
+  cannot go, brings it back as it was. A pass is never kept: every dialog
+  asks the helper. A pass answers presence `verified` and the window
+  chosen. No helper to ask refuses.
+
+Refuse is a signed answer that refuses; a hang-up, no galley or no helper
+is an extension failure. The answer's hops are the binds, none with no
+bind. The gate checks the rest.
+
+Every host that lists this machine's key in `remoteKeys` takes its
+answer as "approved, presence checked", so your machines form a network,
+each as strict as the weakest in its list ([sudo.md](sudo.md#remote-mode)).
+A stock agent cannot answer the extension, so it approves no remote sudo.
+
+The signer refuses a session-bind as OpenSSH's ssh-agent does: after one
+that does not forward, and for a session id already bound to another host
+key. The same bind again is kept once.
 
 ### Your own machines
 
@@ -227,6 +285,40 @@ commit's signature that is the claude or tab above `git commit`, since
 git's `ssh-keygen -Y sign` is shown through; the decision, and the
 journal's anchor, are still ssh-keygen's.
 
+## Presence check
+
+A remote sudo that needs a presence check asks, in galley, for your
+password on this machine. The signer passes it to `quoin-presence`, a root
+helper, and only the answer goes back. The password never leaves this
+machine.
+
+- It checks `forUser`'s password with PAM's `quoin-sudo` service, the one
+  the sudo dialog runs, so a change to that stack changes local and remote
+  together. `forUser` is in its `ExecStart`, and never root.
+- `quoin-presence.socket` is `/run/quoin-presence/sock`, mode 0600, owned
+  by `quoin-signer`, and the helper checks the peer's uid too
+  (`SO_PEERCRED`). `Accept=no`: one request at a time, so pam_unix's fail
+  delay limits the guesses.
+- A request is a version byte (1), a big-endian u16 length, then the
+  secret: 1 to 1023 bytes, no NUL, no newline. The reply is `P` (passed) or
+  `F`, then the connection is closed. A malformed request, or a peer that
+  is not the signer, is closed with no reply.
+- The secret is zeroed after use and never logged: the journal has one line
+  per request, its outcome. Neither the helper nor the signer dumps core
+  (`LimitCORE=0`).
+- It runs as root with no capabilities, in a sandbox that does not rest
+  on file modes, which do not hold uid 0: no `/run` but nscd, the
+  wrappers (`unix_chkpwd`) and the journal, no `/var` or `/nix/var`, no
+  `/etc/ssh` or `/boot`, its own network namespace, and kernel knobs
+  read-only. So it
+  reaches no root-only socket (systemd's, D-Bus's, nix-daemon's, the
+  gate's). A PAM module added to `quoin-sudo` that needs more (fprintd's
+  D-Bus, a FIDO key's device) needs the sandbox opened for it.
+
+galley is trusted as it is today: it runs as you, in `galley.service`'s
+cgroup. That is more than zenity had. Its limit: a process running as you
+that sets out to fake galley can.
+
 ## Journal
 
 ```
@@ -235,9 +327,16 @@ journalctl -u quoin-signer -o cat | jq 'select(.msg == "decision")'
 
 One `decision` record per sign: the chain, the anchor, the destination, the
 key, the outcome, and its `source` (`unit`, `terminal`, `host`,
-`project`, `sshsig`, `grant`, `galley`, `always`, `nobody`, `hung up`),
-with `project`, `project_digest` and `project_applies` when a project was
-read. An `always` line says whether Always's file was `written` or `not
+`project`, `sshsig`, `grant`, `galley`, `always`, `nobody`, `hung up`,
+`presence`), with `project`, `project_digest` and `project_applies` when a
+project was read. A remote sudo's has `class` `remote sudo`, the message's
+fields (`user`, `runas`, `cwd`, `argv`, `nonce`, `danger`, `env`,
+`remote_chain`, `cmdlines_left_out`, `fields_ignored`, `host_keys`,
+`decision`, `presence`, `window`, and `rule`, `rule_source` and
+`window_key` when set), `through` for the hosts before the last, or `via`
+`unbound relay` with no bind, `secrets_wrong`, and what it answered:
+`answer`, `answer_presence`, `answer_window` and `hops`. A refusal unasked
+is one `refused` line with its `reason`. An `always` line says whether Always's file was `written` or `not
 saved`, and why; a `project policy ignored` line why a file did not apply. A failed sign is one `sign failed`
 line with the TPM's cause; ssh itself only says `agent refused operation`.
 

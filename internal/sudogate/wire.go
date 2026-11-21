@@ -46,6 +46,7 @@ type request struct {
 	remote    bool
 
 	pub    []byte
+	answer []byte
 	sig    []byte
 	failed *string
 }
@@ -98,8 +99,8 @@ func readRequest(r io.Reader) (*request, error) {
 	if req.kind == kindVerify && len(req.verified) != 1 {
 		return nil, errors.New("'V' without one result")
 	}
-	if req.kind == kindSign && (req.failed == nil) == (req.pub == nil || req.sig == nil) {
-		return nil, errors.New("'S' without either 'f' or both 'p' and 'g'")
+	if req.kind == kindSign && (req.failed == nil) == (req.pub == nil || req.answer == nil || req.sig == nil) {
+		return nil, errors.New("'S' without either 'f' or each of 'p', 'n' and 'g'")
 	}
 	return req, nil
 }
@@ -158,9 +159,11 @@ func (req *request) addSign(tag byte, rec []byte) error {
 	switch {
 	case tag == 'p' && req.pub == nil && req.failed == nil:
 		req.pub = rec
+	case tag == 'n' && req.answer == nil && req.failed == nil:
+		req.answer = rec
 	case tag == 'g' && req.sig == nil && req.failed == nil:
 		req.sig = rec
-	case tag == 'f' && req.pub == nil && req.sig == nil && req.failed == nil && printable(rec):
+	case tag == 'f' && req.pub == nil && req.answer == nil && req.sig == nil && req.failed == nil && printable(rec):
 		f := string(rec)
 		req.failed = &f
 	default:
@@ -191,7 +194,8 @@ func writeReply(w io.Writer, kind byte, msg []byte) error {
 	return err
 }
 
-// writeMessage is the 'M' reply: the message to sign and the listed keys.
+// writeMessage is the 'M' reply: the message for the agent to answer and
+// the keys whose answer counts.
 func writeMessage(w io.Writer, msg []byte, keys [][]byte) error {
 	body := ssh.Marshal(struct {
 		Msg []byte

@@ -2,7 +2,8 @@
 // silently for a listed unit's main process, for a terminal tab ssh-ing to
 // a known host, for any process's direct login to a host allowed by name
 // and for listed SSHSIG namespaces, and asks through galley for everything
-// else.
+// else. A remote sudo it answers through the quoin-sudo@quoin extension,
+// a dialog's secret checked by quoin-presence.
 package main
 
 import (
@@ -26,6 +27,8 @@ import (
 const (
 	keyDir     = "/var/lib/quoin-signer"
 	knownHosts = "/etc/ssh/ssh_known_hosts"
+	hostKeys   = "/etc/ssh/ssh_host_*_key.pub"
+	presence   = "/run/quoin-presence/sock"
 	tpmDevice  = "/dev/tpmrm0"
 )
 
@@ -124,7 +127,7 @@ func runServe(argv []string) error {
 	tpm := tpmkey.Device(tpmDevice)
 	s := &agentsrv.Server{
 		User: cfg.ForUser, UID: uid, Terminal: cfg.Terminal, SSHSIG: cfg.SSHSIG, Hosts: cfg.SSH.Hosts,
-		KnownHosts: knownHosts, Grants: grant.New(), Log: log,
+		KnownHosts: knownHosts, HostKeys: hostKeys, Presence: presence, Grants: grant.New(), Log: log,
 		LoginSigners: cfg.LoginSigners, PolicySigners: cfg.PolicySigners, ForwardedThrough: cfg.SSH.ForwardedThrough,
 	}
 	if p := cfg.Policy; p != nil {

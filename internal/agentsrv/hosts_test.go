@@ -132,8 +132,8 @@ func (h *harness) own(name string) ssh.Signer {
 func (h *harness) through(hops ...ssh.Signer) *client {
 	h.t.Helper()
 	c := h.dial(tab())
-	for _, hop := range hops {
-		if err := c.bind(h.t, hop, []byte("hop"), true); err != nil {
+	for i, hop := range hops {
+		if err := c.bind(h.t, hop, []byte{'h', byte(i)}, true); err != nil {
 			h.t.Fatal(err)
 		}
 	}
@@ -220,14 +220,14 @@ func TestOwnHostsWidenNoRuleAndNeverRemoteSudo(t *testing.T) {
 		t.Error("a push to a host set to ask was made unasked")
 	}
 
-	done = h.through(blade).signAsync(h.key(0), sudoMessage(t, blade.PublicKey()))
+	call := h.through(blade).sudoAsync(h.key(0), sudoMessage(t, blade.PublicKey()))
 	a = h.next()
 	if a.q.Title != "sudo systemctl stop sshd.service on dan-blade" {
 		t.Errorf("asked %+v", a.q)
 	}
 	a.reply <- answered{}
-	if err := wait(t, done); err == nil {
-		t.Error("a refused remote sudo was signed")
+	if err := wait(t, call.done); err == nil {
+		t.Error("a refused remote sudo was allowed")
 	}
 }
 

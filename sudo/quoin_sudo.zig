@@ -4,7 +4,7 @@
 //! A gated sudo is remote when the process serving its SSH_AUTH_SOCK is a
 //! forwarder (chain.isForwarder): the plugin connects to the agent as the
 //! invoking user at open, asks the kernel who listens, reads that
-//! process's program as root, and keeps the connection for the signature.
+//! process's program as root, and keeps the connection for the answer.
 //! So a sudo reparented away from its login, or under mosey, whose spawner
 //! is no sshd-session, is remote all the same. One that is not remote but
 //! is in an ssh login or a mosey session is stock: it never asks this
@@ -32,7 +32,7 @@ var remote_check_in = false;
 var agent_path_buf: [108]u8 = undefined;
 var agent_path: []const u8 = "";
 /// The forwarded agent's connection, made at open and kept for the
-/// signature, so no second connect opens a second forwarded channel.
+/// answer, so no second connect opens a second forwarded channel.
 var agent_conn: ?fd.Sock = null;
 /// The drop to the invoking user, or the restore, failed at open.
 var drop_failed = false;
@@ -263,11 +263,15 @@ fn answer(r: Got) c_int {
     return 0;
 }
 
-/// After a remote 'A': the gate's 'M', the forwarded agent's signature in
-/// an 'S', and the gate's answer.
+/// After a remote 'A': the gate's 'M', the forwarded agent's signed
+/// answer in an 'S', and the gate's answer. A yes or a no to the 'A' is a
+/// rule's, and the agent is let go unasked.
 fn remoteAnswer(s: fd.Sock, errstr: [*c][*c]const u8) c_int {
     const r = readReply(s, .remote) catch return noAnswer(errstr);
-    if (r.reply != .message) return answer(r);
+    if (r.reply != .message) {
+        closeAgent();
+        return answer(r);
+    }
     const m = wire.signing(r.body) orelse return noAnswer(errstr);
     const req = agentStep(m) catch {
         errstr.* = "cannot drop to the invoking user";
@@ -277,16 +281,17 @@ fn remoteAnswer(s: fd.Sock, errstr: [*c][*c]const u8) c_int {
     return answer(readReply(s, .yes_no) catch return noAnswer(errstr));
 }
 
-/// The 'S' for `m`, signed on the connection open made, which is closed
-/// as soon as the agent answers, so a command sudo runs after does not
-/// hold a forwarded channel, or ssh, open until it exits. error.Drop when
-/// open's drop or restore failed.
+/// The 'S' for `m`, asked in the quoin-sudo@quoin extension on the
+/// connection open made, which is closed as soon as the agent answers, so
+/// a command sudo runs after does not hold a forwarded channel, or ssh,
+/// open until it exits. There is no plain sign to fall back to. error.Drop
+/// when open's drop or restore failed.
 fn agentStep(m: wire.Signing) error{Drop}![]u8 {
     defer closeAgent();
     if (drop_failed) return error.Drop;
     const s = agent_conn orelse return wire.signFailed(&signature_request, "cannot connect to the forwarded agent");
-    return switch (agent.sign(s, m.keys, m.message, &agent_buf)) {
-        .signed => |x| wire.signature(&signature_request, x.key, x.signature),
+    return switch (agent.ask(s, m.keys, m.message, &agent_buf)) {
+        .answered => |x| wire.answered(&signature_request, x.key, x.answer, x.signature),
         .failed => |why| wire.signFailed(&signature_request, why),
     };
 }
@@ -356,40 +361,8 @@ fn noAnswer(errstr: [*c][*c]const u8) c_int {
     return 0;
 }
 
-/// Answers every prompt with the password; PAM frees what it is given.
-fn converse(n: c_int, msgs: [*c][*c]const c.struct_pam_message, resp: [*c][*c]c.struct_pam_response, data: ?*anyopaque) callconv(.c) c_int {
-    if (n <= 0) return c.PAM_CONV_ERR;
-    const count: usize = @intCast(n);
-    const password: [*:0]const u8 = @ptrCast(data orelse return c.PAM_CONV_ERR);
-    const replies: [*]c.struct_pam_response = @ptrCast(@alignCast(std.c.calloc(count, @sizeOf(c.struct_pam_response)) orelse return c.PAM_BUF_ERR));
-    for (0..count) |i| {
-        const style = msgs[i].*.msg_style;
-        if (style != c.PAM_PROMPT_ECHO_OFF and style != c.PAM_PROMPT_ECHO_ON) continue;
-        const len = std.mem.len(password);
-        const copy: [*]u8 = @ptrCast(std.c.malloc(len + 1) orelse {
-            for (0..i) |j| if (replies[j].resp) |p| {
-                std.crypto.secureZero(u8, std.mem.span(p));
-                std.c.free(p);
-            };
-            std.c.free(replies);
-            return c.PAM_BUF_ERR;
-        });
-        @memcpy(copy[0 .. len + 1], password[0 .. len + 1]);
-        replies[i].resp = @ptrCast(copy);
-    }
-    resp.* = replies;
-    return c.PAM_SUCCESS;
-}
-
-fn verify(user: [*:0]const u8, password: [*:0]const u8) bool {
-    const conv: c.struct_pam_conv = .{ .conv = converse, .appdata_ptr = @constCast(password) };
-    var h: ?*c.pam_handle_t = null;
-    var rc = c.pam_start("quoin-sudo", user, &conv, &h);
-    if (rc == c.PAM_SUCCESS) rc = c.pam_authenticate(h, c.PAM_SILENT);
-    if (rc == c.PAM_SUCCESS) rc = c.pam_acct_mgmt(h, c.PAM_SILENT);
-    if (h != null) _ = c.pam_end(h, rc);
-    return rc == c.PAM_SUCCESS;
-}
+/// The dialog's password check, which quoin-presence shares.
+const verify = @import("pam").verify;
 
 /// The mode parse, shared with the darwin build.
 pub const listOrValidate = args.listOrValidate;

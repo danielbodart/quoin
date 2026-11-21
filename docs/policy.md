@@ -118,7 +118,7 @@ may write, on `/run/quoin-courier/sock`, socket-activated.
 It answers only the system units its config names, each as the user it
 names: a caller must have that uid and be in that unit's cgroup (by inode,
 under `system.slice`). The signer adds `quoin-signer.service` as
-`ssh-signer` and the gate `quoin-sudo.service` as `sudo-gate` when they are
+`quoin-signer` and the gate `quoin-sudo.service` as `quoin-sudo` when they are
 enabled; another program's module adds its own unit, as frisket's does
 `frisket.service` to write the rule a session's question was answered Always
 with.
@@ -191,7 +191,7 @@ serve -config` reads, keys named as the options are:
 
 ```json
 { "fileName": "chase.json", "allowedSigners": "/etc/quoin/allowed_signers",
-  "peers": { "quoin-signer.service": "ssh-signer", "quoin-sudo.service": "sudo-gate" } }
+  "peers": { "quoin-signer.service": "quoin-signer", "quoin-sudo.service": "quoin-sudo" } }
 ```
 
 A key it does not know, a `fileName` that is not a file name or ends in

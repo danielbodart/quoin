@@ -35,9 +35,12 @@ $ sudo id                           # in a terminal: stock sudo, the gate never 
 Let galley take questions from the gate:
 
 ```nix
-services.galley.services = { sudo-gate = "sudo"; };   # home-manager
+services.galley.services = { quoin-sudo = "sudo"; };   # home-manager
 systemd.tmpfiles.rules = [ "d /run/galley-ask 0755 alice alice -" ];
 ```
+
+The gate's user was `sudo-gate`. Its uid, 952, is the same, but galley's
+services must name `quoin-sudo`.
 
 Unset `SUDO_ASKPASS` for anything that runs sudo with no terminal: a sudo
 the gate does not take (the gate stopped, `-v`) would run it.
@@ -52,7 +55,7 @@ previous generation.
 |---|---|---|
 | `enable` | `false` | The plugin line in `/etc/sudo.conf`, the PAM rule, the `quoin-sudo` PAM service, the sudoers defaults and the gate. |
 | `forUser` | `"dan"` | The gated user, and whose galley is asked. |
-| `remoteKeys` | `[ ]` | SSH public key lines whose signature approves a remote sudo (below); empty is remote mode off. |
+| `remoteKeys` | `[ ]` | Each of your machines' signer keys, as SSH public key lines, whose signed answer approves a remote sudo ([Remote mode](#remote-mode)); empty is remote mode off. |
 | `danger.<pattern>` | `{ }` | Danger rules beside the built-in catalogue (below): `reason` for any command the pattern matches, `args.<glob>` for one with an argument the glob matches. |
 | `exec.<pattern>.answer` | | The host's exec rules ([Rules](#rules)): `allow`, `ask` or `refuse` for a resolved command the pattern matches. |
 | `exec.<pattern>.runAs` | `"root"` | The user the rule's commands run as; a sudo as anyone else is not the rule's. |
@@ -114,7 +117,10 @@ the one checked. `sudo -n` gets the dialog too.
 - **Inside a window**: a question, Allow or Refuse. The window is
   keyed on the claude and pinned to the galley process that took the
   password; it ends at its time, or when either exits. An Allow from any
-  other galley process is a refusal.
+  other galley process is a refusal. Only whoever opened a window answers
+  inside it: here that galley process, for a remote sudo the key that
+  signed the dialog's answer ([Remote mode](#remote-mode)). A window of
+  one kind never covers a sudo of the other; that sudo gets the dialog.
 - **Danger**: a `systemctl` on `quoin*`, `galley*`, `sshd*`,
   `nftables*` or `debug-shell*`, a command matching a `danger` rule, a
   program outside `/run/current-system/sw/bin`, `/run/wrappers/bin` and
@@ -198,7 +204,8 @@ claude> sudo systemctl stop sshd    # danger: the dialog, whatever a rule says
   or launched from `systemd --user`), a command the gate did not see
   whole, one with a variable outside the allowlist, and a shell,
   `sudo -s`, `sudo -i` or `env`, whose command is another's. Each is
-  asked as it is with no rules. Remote mode reads no rules.
+  asked as it is with no rules. A remote sudo is decided by the same
+  rules ([Remote mode](#remote-mode)).
 - **The project** is the one the courier finds above the working
   directory of the process that ran sudo ([policy.md](policy.md)). Its
   `sudo.exec` is merged over the host's with RFC 7396's merge patch: a
@@ -225,13 +232,15 @@ claude@laptop> ssh -A desktop sudo systemctl restart foo
                                     #   /run/current-system/sw/bin/systemctl restart foo
                                     #   dan as root in /home/dan
                                     #   from here: claude ← ssh -A desktop sudo systemctl restart foo
+                                    #   key SHA256:… (laptop)
                                     #   [desktop's chain: PID / Process / Command]
-                                    #   [Refuse] [Allow]
+                                    #   Password for dan [••••]  Remember for [15] [minutes ▾]  [Cancel] [Allow]
+quoin-sudo: password remembered for this claude until 16:40
 ```
 
 On a host whose gate has `remoteKeys`, a sudo of `forUser`'s with no tty
-whose `SSH_AUTH_SOCK` is a forwarded agent is approved by a signature from
-one of those keys:
+whose `SSH_AUTH_SOCK` is a forwarded agent is asked through that agent,
+and approved by a signed answer from one of those keys:
 
 ```nix
 services.quoin.sudo.remoteKeys = [ "ecdsa-sha2-nistp256 AAAA… alice@laptop" ];
@@ -239,7 +248,33 @@ services.quoin.sudo.remoteKeys = [ "ecdsa-sha2-nistp256 AAAA… alice@laptop" ];
 
 The keys are written to `/etc/quoin/sudo.json` and `remote` is
 added to the plugin line; there are no new PAM lines. The client needs
-only `ForwardAgent` for the host.
+`ForwardAgent` for the host, and quoin-signer as the agent
+([signer.md](signer.md#remote-sudo)).
+
+**One path.** The gate decides a remote sudo as it decides a local one:
+the same host and project rules, danger lines, warnings and windows. An
+`allow` or `refuse` rule answers at once, as locally, and the agent is
+never asked. Everything else is asked, the same question, through the
+agent in place of this host's galley:
+
+- an `ask` rule's question is Allow or Refuse, with no password;
+- outside a window, the dialog, which takes your password on the client
+  and, as locally, offers a window unless the sudo is a danger or a
+  warning;
+- inside a window, the window's question.
+
+The password is checked on the client, by `quoin-presence` for the
+signer ([signer.md](signer.md#presence-check)), with the same PAM service
+the plugin runs here: only "verified" crosses the wire, never the
+password. It is the client's password, not this host's.
+
+**Windows.** A remote dialog offers up to 24 hours, galley's longest. The
+window is keyed on the sudo's claude on this host, as locally; for an
+`ssh -A host 'sudo a && sudo b'` that is the login's `sshd-session`, so
+it covers that login's sudos. Inside it the question goes to the key that
+opened it alone; an answer signed by another key is refused. A local
+window never covers a remote sudo, nor a remote one a local sudo. A
+remote window ends at its time, or with its claude.
 
 The agent is forwarded when the process serving `SSH_AUTH_SOCK` is a
 forwarder. At open the plugin connects to the socket as the invoking user,
@@ -248,72 +283,149 @@ from `/proc/<pid>/exe` as root (an `sshd-session` is not dumpable, so the
 user cannot). It is a forwarder when it runs as the invoking user and its
 program is `sshd-session` (`sshd` before OpenSSH 9.8) or mosey (`mosey` or
 nixpkgs' `.mosey-wrapped`, wherever it lives, `~/.local/bin` included).
-The connection is kept and the signature asked on it, so the sudo opens
+The connection is kept and the question asked on it, so the sudo opens
 one forwarded channel, not two, and closed as soon as the agent answers,
 so the command sudo runs after (`sudo -b`, a long job) holds no channel,
-nor `ssh`, open. This is who serves the agent, not what the
-chain looks like, so a sudo reparented away from its login (`setsid`,
-tmux) or run under mosey, whose spawner is no `sshd-session`, is remote
-all the same. The connect never waits: a listener with a full backlog is
-no agent. A Mac asks the same question with its own calls
-([macOS](#macos)).
+nor `ssh`, open. A rule's answer closes it unused. This is who serves the
+agent, not what the chain looks like, so a sudo reparented away from its
+login (`setsid`, tmux) or run under mosey, whose spawner is no
+`sshd-session`, is remote all the same. The connect never waits: a
+listener with a full backlog is no agent. A Mac asks the same question
+with its own calls ([macOS](#macos)).
 
-The gate classifies the command as for a local sudo and hands the plugin a
-message to sign, `quoin-sudo-v1`: a nonce, the host's keys, then named
-fields -- the user, the runas user, the cwd, the resolved command, the
-danger lines, the variables outside the allowlist, and the sudo's process
-chain as the plugin read it as root, up to 16 links. A message over the agent's limit
-has the chain's command lines left out from the top of the chain down
-until it fits, and says so; the command, danger lines and variables are
-never cut, and what still does not fit is refused, "command too long for
-the gate". The plugin connects
-to the forwarded agent as the invoking user and asks for a plain signature
-with the first listed key the agent holds. quoin-signer on the client
-asks every time, naming the host from `/etc/ssh/ssh_known_hosts`, and
-refuses unless its forwarded session is bound to one of the message's host
-keys; no grant or window skips it. A stock agent holding a listed key
-signs without asking.
+**The message.** The gate classifies the command as for a local sudo and
+hands the plugin a message, `quoin-sudo-v1`: a nonce, the host's keys,
+then named fields -- the user, the runas user, the cwd, the resolved
+command, the danger lines, the variables outside the allowlist, the
+sudo's process chain as the plugin read it as root, up to 16 links, and
+what the gate decided: `!decision` (`dialog` or `question`), `!presence`
+(`required` or `none`), `!window` (the most seconds a window may be, 0
+for none), `!rule` (the pattern and its source, when a rule asked) and
+`!window-key` (the key that opened the window, when a window made it a
+question). A message over the agent's limit has the chain's command lines
+left out from the top of the chain down until it fits, and says so; the
+command, danger lines and variables are never cut, and what still does
+not fit is refused, "command too long for the gate".
 
-quoin-signer asks it as the host would ask that sudo locally, by the same
-builder (`internal/sudoq`): the host's chain is the table, the title ends
-"on <host>", and the chain of the ssh on this machine is shown only on
-lines of its own, each `from here: `, whose warnings raise a normal
-question to a warning. A message that does not read strictly is refused
-unasked.
+The plugin connects to the forwarded agent as the invoking user and puts
+the message, with the first listed key the agent holds, in the agent
+extension `quoin-sudo@quoin`. OpenSSH and mosey pass it on as opaque
+bytes. quoin-signer on the client asks it every time, as the host would
+ask that sudo locally, by the same builder (`internal/sudoq`): the host's
+chain is the table, the title ends "on <host>", or "on <host> via
+<hosts>" through other hosts, from `/etc/ssh/ssh_known_hosts`, and the
+chain of the ssh on this machine is shown only on lines of its own, each
+`from here: `, whose warnings raise a normal question to a warning. It
+refuses, unasked, a message that does not read strictly, and one whose
+forwarded session is not bound to one of the message's host keys, or,
+with no bind at all, is not this machine's own relayed by mosey
+([below](#a-local-mosey-session)). No grant skips it.
+
+It replies with an answer record, `quoin-sudo-answer-v1`: `!decision`
+(`allow` or `refuse`), `!presence` (`verified` or `none`), `!window`
+(the seconds chosen) and `!hops` (the session-binds the request came
+through, each host key and whether it forwarded), signed with the key over
+the message the gate sent, then the answer. The gate takes it only when:
+
+- the key is a listed key, and the window's when `!window-key` is set;
+- the signature verifies over its own message bytes, then the answer;
+- the answer parses strictly;
+- the decision is allow;
+- presence is verified when the message requires it;
+- the window is at most the message's, and above 0 only for a dialog
+  with presence verified;
+- the last hop is one of this host's keys, or there are no hops.
+
+A dialog's answer with a window opens it for the signing key, and sudo
+says until when, as locally.
+
+**No plain sign.** The signer refuses, unasked, a plain sign of data that
+starts with the `quoin-sudo-v1` magic, and the plugin never falls back to
+one. A stock agent knows no `quoin-sudo@quoin` and cannot show the
+question or take the password, so it cannot approve a remote sudo, even
+holding a listed key: "the forwarded agent refused". For a machine
+without quoin-signer, use `ssh -t` and the host's password, or a
+`NOPASSWD` rule: the administrator's choice, which quoin does not stop.
+
+**Trust.** `remoteKeys` holds each of your machines' signer keys (their
+TPM keys), so your machines form a network: each host trusts each listed
+machine's quoin-signer to say "approved, presence checked". A host is
+only as strict as the weakest machine in its list. Root on one of them
+can sign approvals for the others; with stock tools root there could
+already use your ssh keys and capture your password.
 
 **Fields, not versions.** The message grows by adding fields, never by a
-new magic. A field's key is marked critical with a `!`; a signer that
-meets a critical field it does not know refuses the sudo unasked, naming
-it, and one that meets an unmarked field it does not know drops it, the
-journal naming it in `fields_ignored`. Every field today is critical,
-since each is part of what is approved. A field may go unmarked only when
-a signer could leave it unshown without changing what is approved -- a
-hint, say, or something that only adds to the picture -- and never when
-anything else is left out or relaxed because it is there. That is no
-downgrade: the gate alone writes the message and checks the signature
-over its own bytes, so nothing between can strip a field, and an older
-signer asks what it always asked.
+new magic, and the answer the same way. A field's key is marked critical
+with a `!`; a signer that meets a critical field it does not know refuses
+the sudo unasked, naming it, and one that meets an unmarked field it does
+not know drops it, the journal naming it in `fields_ignored`. Every field
+today is critical, since each is part of what is approved, and every
+answer field is too. A field may go unmarked only when a reader could
+leave it unshown without changing what is approved -- a hint, say, or
+something that only adds to the picture -- and never when anything else
+is left out or relaxed because it is there. That is no downgrade: the
+gate alone writes the message and checks the signature over its own
+bytes, so nothing between can strip a field, and an older signer asks
+what it always asked.
 
-**Upgrading from the first layout.** Before the fields, the message was
-the user, runas, cwd and command, a level and its reasons. A signer from
-then reads today's message as that layout, finds it malformed and
-refuses; a signer now refuses a message from a gate of then. Neither asks
-anything else, so a remote sudo between a host and a laptop on either
-side of this change is refused until both are updated, in either order.
+**Upgrading to the signed answer.** A gate from before asked for a plain
+signature, which a signer now refuses for this magic; a gate now asks in
+the extension, which a signer from before does not know. Either way the
+sudo is refused, never approved, until both sides are updated, in either
+order. The plugin and the gate on one host change in the same switch.
 
 A sudo with a tty (`ssh -t`) asks the host's own password, as stock. No
 forwarded agent, no `remoteKeys`, or the gate down is stock too: "a
 terminal is required". So is an agent that is not forwarded -- an
 `ssh-agent` started in the login, a relay of another program's or another
 user's, a socket nobody listens on -- for a sudo in an ssh login or a
-mosey session, which never asks the host's own galley. A detached sudo
-with no forwarded agent is gated locally, as any other. The agent refusing, failing or holding no listed
-key refuses the sudo:
+mosey session, which the gate never asks locally. A detached sudo
+with no forwarded agent is gated locally, as any other. The agent
+refusing, failing, knowing no extension or holding no listed key refuses
+the sudo:
 
 ```
 quoin-sudo: the forwarded agent refused
 sudo: quoin_audit: unable to log accept event
 ```
+
+So does your Cancel, signed (`cancelled`, as locally; Refuse on a
+question is `refused`), and an answer the gate does not take
+(`quoin-sudo: ` and why).
+
+### A local mosey session
+
+A sudo in a mosey session whose attached client runs in a terminal on
+this machine (`mosey`, started here or taken back here) is remote too:
+mosey serves its `SSH_AUTH_SOCK`, and its relay forwards that client's
+own `SSH_AUTH_SOCK` with no bind, as no ssh connection was made. When
+that is this machine's quoin-signer, the signer takes a message on a
+connection with no bind when every host key it names is one of this
+machine's (`/etc/ssh/ssh_host_*_key.pub`, read each time) and the process
+that connected is a mosey client (`mosey`, or `.mosey-wrapped`, by its
+name). It is decided as any other sudo, rules, dialog, windows and all,
+and asked in this machine's galley by the same builder as the gate asks a
+local sudo -- no "on <host>", no `from here: ` lines, the sudo's own chain
+the table. The gate's `remoteKeys` must list this machine's own signer
+key. Any other message with no bind is refused unasked: one that also
+names another host's key, which may be that host's, and one relayed by
+anything but mosey, since an `ssh -A` that sends no session-bind, or
+another forwarder, may bring it from a machine that knows this one's
+public host keys.
+
+Where the sudo is asked follows the client attached when it runs, not
+where the session started. A session attached from another machine over
+ssh, a local `mosey` run inside an `ssh -A` login included, relays that
+machine's agent, bound, and is asked there, "on <host>"; if that client
+forwards no agent, the relay closes the connection and the sudo is
+refused.
+
+Only this host's gate makes the nonce, for a sudo already running here as
+the user, and checks the answer over its own bytes, so a message made up
+elsewhere approves nothing. Any process of the user can pick remote mode,
+by pointing `SSH_AUTH_SOCK` at a mosey session's relay socket, or at a
+relay of its own named `mosey`; it gets the decision a local sudo gets,
+the rules and the password included, asked by the signer.
 
 ## macOS
 
@@ -328,9 +440,11 @@ services.quoin.sudo = {
 ```
 
 A Mac has no galley of its own to ask and is reached over ssh, so there is
-no local mode and no gate daemon: remote mode reads no rules, and the
-plugin (`sudo/quoin_sudo_darwin.zig`) does the gate's remote half in sudo's
-own process. It is the Linux plugin and gate, step for step:
+no local mode and no gate daemon. Nothing outlives one sudo, so it has no
+rules and no windows: every sudo is the dialog, its password checked on
+the client. When galley comes to macOS, the Mac gets a gate, and with it
+windows and rules. The plugin (`sudo/quoin_sudo_darwin.zig`) does the
+gate's remote half in sudo's own process. It is the Linux plugin and gate, step for step:
 
 - **open** arms on the gated user, not `-l` or `-v`, no tty, `remote`,
   an absolute `SSH_AUTH_SOCK` served by a forwarder, and listed keys that
@@ -340,25 +454,34 @@ own process. It is the Linux plugin and gate, step for step:
   `LOCAL_PEERPID`, and reads its program as root with `proc_pidpath`; a
   forwarder is the user's own `sshd-session`, `sshd` or mosey, wherever
   it lives. So a sudo under mosey, or reparented away from its login, is
-  remote on a Mac too. The connection is kept for the signature, closed as soon as the agent answers, and the
-  connect never waits. A drop to the user or a restore that fails
+  remote on a Mac too. The connection is kept for the answer, closed as
+  soon as the agent answers, and the connect never waits. A drop to the user or a restore that fails
   refuses the sudo.
 - **PAM**: `quoin_sudo_pam.so`, `sufficient`, first in `sudo_local` (macOS
   has no `pam_exec`). The Linux helper's tests, then, where it asks the
   gate whether its sudo checked in, it asks the plugin in the same sudo
   whether it armed. A plugin that is not loaded or not armed is the
   password.
-- **accept** builds the `quoin-sudo-v1` message from sudoers' `command_info` and the
-  chain above sudo, byte for byte as `internal/sudomsg`
+- **accept** builds the `quoin-sudo-v1` message from sudoers'
+  `command_info` and the chain above sudo, byte for byte as `internal/sudomsg`
   (`sudo/sudomsg.zig`, held to the Go golden), cut to fit as the gate cuts
-  it, has the forwarded agent sign it on open's connection, and verifies
-  the signature itself. The chain is read with `sysctl` where Linux reads
+  it, and asks it through the forwarded agent's `quoin-sudo@quoin`
+  extension on open's connection. The Mac has no rules and no windows, so
+  the message is always `!decision dialog`, `!presence required` and
+  `!window 0`. The plugin checks the signed answer as the gate does, by
+  the same code held to Go's cases: the signature over the message then
+  the answer, by a listed key; the answer read strictly; an allow;
+  presence verified; no window; and the last hop this host's key, or no
+  hops. The chain is read with `sysctl` where Linux reads
   `/proc`: each link's `kinfo_proc` twice, its start time the check that
   the pid was not reused, and its argv with `KERN_PROCARGS2` between the
   two reads, so the client's table shows the Mac's command lines as a
-  Linux host's. A refusal and every failure -- no agent, a hang-up,
-  garbage, no listed key, a bad signature -- refuse the sudo, as the gate
-  does; none falls back to the password. Nothing waits on a timer.
+  Linux host's. Your Cancel is `cancelled`, as on Linux, its `source`
+  `signer`. A refusal and every failure -- no agent, a hang-up,
+  garbage, no listed key, a bad signature, an answer that does not check
+  -- refuse the sudo, as the gate does; none falls back to the password,
+  and none to a plain sign, which a stock agent would give. Nothing waits
+  on a timer.
 
 The listed keys are nistp256 or ed25519, the two Zig's std verifies; a
 line of any other type fails the file, and remote mode is off. The module
@@ -386,8 +509,8 @@ first, before `/etc` changes, and a failure fails the switch:
 Decision records go to `/var/log/quoin-sudo.log`, one line each, with the
 gate's fields: the nonce, the host key fingerprints, user, runas, cwd,
 argv, the chain's comm names as `chain`, `cmdlines_left_out=true` when
-command lines were cut to fit, the key that signed, `outcome` and
-`source`. Not the unified log:
+command lines were cut to fit, the key that signed, the answer's `hops`,
+`outcome`, `source` and a refusal's `reason`. Not the unified log:
 `os_log` and `syslog` read their format string from the plugin's dylib,
 which logd's sandbox may not, and every record reads `<compose failure>`.
 
@@ -409,14 +532,31 @@ A remote sudo's records have `remote` set, the message's fields (`user`,
 `runas`, `cwd`, `argv`, `danger`, `env`), the `level` the
 gate gave it, `cmdlines_left_out` when the chain's command lines were cut
 to fit, `truncated` when the plugin's request to the gate was, the host
-key fingerprints as `host_keys`, the `nonce`, and the `key` that signed.
+key fingerprints as `host_keys`, the `nonce`, what was asked (`decision`,
+`requires`, `offered`, `window_key`, and `rule` with `rule_source` when a
+rule asked), and the `key` that signed. A rule's answer has the rule's
+`source`; one that went to the agent has a `pending` record when the
+message goes, then one with `source` `signature` (allowed), `signer`
+(your refusal), `agent` (it refused or failed, with `reason`), `not a
+listed key`, `signature did not verify` or `answer` (with `err`), and
+what came back: `answered`, `presence`, `window`, `hops`, and
+`window_until` when it opened a window.
 
 quoin-signer's record of a remote sudo (`journalctl -u quoin-signer`,
 [signer.md](signer.md)) has the message's `user`, `runas`, `cwd`, `argv`,
 `nonce`, `danger` and `env`, the `level` it asked at, the host's chain as
 `remote_chain`, command lines and all, beside this machine's `chain`,
 `remote_cut` when the host's chain was cut short, `cmdlines_left_out`,
-and `fields_ignored`, the unmarked fields it did not know.
+`fields_ignored`, the unmarked fields it did not know, the message's
+host key fingerprints as `host_keys`, what was asked and what it answered
+([signer.md](signer.md#journal)). Its `class` is `remote sudo`; a local
+mosey session's has `destination` `this host` and `via` `unbound relay`,
+its `chain` the mosey client's. One with no bind that is refused says why
+in `reason`: `remote sudo on an
+unbound connection` when its host keys are not this machine's alone (or
+none of this machine's read: look for `host key unreadable`,
+`host key skipped` or `host keys unreadable`), and
+`this host's sudo on an unbound connection, not from a mosey client`.
 
 ## Environment
 

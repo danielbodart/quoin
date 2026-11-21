@@ -43,7 +43,7 @@ let
     hash = "sha256-GicN77r9Oh9xPqlIP5CS0/y2hSenxlM6thAiv1bjBW8=";
   };
 
-  sources = map (f: root + "/${f}") [ "abi.zig" "fd.zig" "wire.zig" "chain.zig" "agent.zig" "ids.zig" "args.zig" "quoin_sudo.zig" "quoin-sudo-pam.zig" "quoin-sudo-check-plugin.zig" ];
+  sources = map (f: root + "/${f}") [ "abi.zig" "fd.zig" "wire.zig" "chain.zig" "agent.zig" "ids.zig" "args.zig" "pam.zig" "quoin_sudo.zig" "quoin-sudo-pam.zig" "quoin-sudo-check-plugin.zig" "quoin-presence.zig" ];
 
   plugin = variant: zigBuild {
     pname = "quoin-sudo-plugin" + lib.optionalString (variant != null) "-${variant}";
@@ -75,6 +75,14 @@ in
   # passthru.misread's mode test always says -v, for the sudo VM;
   # passthru.logIds prints its ids around the drop, for the remote VM.
   package = plugin null;
+
+  # quoin-presence, the signer's presence check, which no sudo version
+  # touches: nix/signer.nix runs it.
+  presence = zigBuild {
+    pname = "quoin-presence";
+    files = sources;
+    steps = "presence";
+  };
 
   check = zigBuild {
     pname = "quoin-sudo-zig-check";

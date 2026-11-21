@@ -10,18 +10,24 @@
 //!             invoking user, its listener's uid taken from
 //!             LOCAL_PEERCRED and its pid from LOCAL_PEERPID, its program
 //!             read as root with proc_pidpath, and the connection kept for
-//!             the signature. A drop or restore that fails refuses.
+//!             the answer. A drop or restore that fails refuses.
 //!   PAM       quoin_sudo_pam.so, sufficient in sudo_local, skips the
 //!             password only for a sudo this plugin armed, as the Linux
 //!             helper does for one that checked in.
 //!   accept    builds the quoin-sudo message from sudoers' command_info and the
-//!             chain above sudo, has the forwarded agent sign it on open's
-//!             connection, and verifies the signature against the listed
-//!             keys. Anything but a good signature from a listed key -- a
-//!             refusal, an agent that cannot be reached, hangs up or
-//!             answers garbage, no listed key, a bad signature -- refuses,
-//!             as the gate does. The Mac has no danger catalogue, so its
-//!             message's danger and env lines are empty.
+//!             chain above sudo, asks it through the forwarded agent's
+//!             quoin-sudo@quoin extension on open's connection, and checks
+//!             the signed answer as the gate does: the signature over the
+//!             message then the answer, from a listed key, the answer read
+//!             strictly, an allow, presence verified, no window, and the
+//!             last hop this host or none. Anything else -- a refusal, an
+//!             agent that cannot be reached, hangs up or answers garbage,
+//!             no listed key, a bad signature, an answer that does not
+//!             check -- refuses, as the gate does. There is no plain sign
+//!             to fall back to. The Mac has no danger catalogue, rules or
+//!             windows, so its message's danger and env lines are empty,
+//!             and it is always a dialog with presence required and no
+//!             window.
 //!
 //! Nothing waits on a timer: the agent is asked as long as sudo's caller
 //! waits. sudo.conf: `Plugin quoin_audit <so> user=<forUser> remote
@@ -52,7 +58,7 @@ var armed = false;
 var agent_path_buf: [104]u8 = undefined;
 var agent_path: []const u8 = "";
 /// The forwarded agent's connection, made at open and kept for the
-/// signature, so no second connect opens a second forwarded channel.
+/// answer, so no second connect opens a second forwarded channel.
 var agent_conn: ?fd.Sock = null;
 /// The drop to the invoking user, or the restore, failed at open.
 var drop_failed = false;
@@ -67,6 +73,7 @@ var argv_words: [max_argv][]const u8 = undefined;
 var message_links: [chain.max_links]sudomsg.Link = undefined;
 var message_buf: [sudomsg.max_size]u8 = undefined;
 var agent_buf: [agent.max_frame]u8 = undefined;
+var signed_buf: [sudomsg.max_size + agent.max_frame]u8 = undefined;
 var user_groups: [ids.max_groups]u32 = undefined;
 
 pub export var quoin_audit: c.struct_audit_plugin = .{
@@ -246,8 +253,9 @@ fn accept(
     return approve(info, @ptrCast(run_argv));
 }
 
-/// The gate's approveRemote and sign, in one: 1 only for a good signature
-/// from a listed key over this sudo's message.
+/// The gate's approveRemote and its check of the answer, in one: 1 only
+/// for an answer to this sudo's message that checks, signed by a listed
+/// key over the message then the answer.
 fn approve(info: CArray, run_argv: CArray) c_int {
     var rec: Record = .{};
     const program = std.mem.span(lookup(info, "command") orelse return refuse(&rec, "bad request", "bad request", null));
@@ -274,11 +282,13 @@ fn approve(info: CArray, run_argv: CArray) c_int {
         out.* = .{ .pid = l.pid, .ppid = l.ppid, .start = l.start, .uid = l.uid, .tty = l.tty, .comm = l.comm(), .cmdline = l.cmdline() };
     }
     rec.chain = links[0..n_links];
+    // A dialog with presence required and no window: the Mac has no
+    // rules or windows, so the defaults.
     const m: sudomsg.Message = .{ .nonce = &nonce, .host_keys = hosts, .user = rec.user, .run_as = rec.run_as, .cwd = rec.cwd, .argv = rec.argv, .links = message_links[0..n_links] };
-    // The agent's sign request is the message, the key blob and flags,
-    // after its type byte and length: the message's room is what is left,
-    // as the Linux gate's.
-    const limit = sudomsg.max_size - (1 + 4 + longestKey(keys) + 4 + 4);
+    // The extension request is the message, the extension's name and the
+    // key blob, after its type byte and length: the message's room is what
+    // is left, as the Linux gate's.
+    const limit = sudomsg.room(longestKey(keys));
     const raw = sudomsg.marshal(m, message_buf[0..limit]) catch |first| blk: {
         if (first == error.TooLong) {
             if (sudomsg.marshalWithin(m, limit, &message_buf)) |cut| {
@@ -293,19 +303,49 @@ fn approve(info: CArray, run_argv: CArray) c_int {
     // does not hold a forwarded channel, or ssh, open until it exits.
     defer closeAgent();
     const s = agent_conn orelse return refuse(&rec, "agent", "quoin-sudo: cannot connect to the forwarded agent", "cannot connect to the forwarded agent");
-    switch (agent.sign(s, keys, raw, &agent_buf)) {
-        .failed => |why| {
-            var msg: [256]u8 = undefined;
-            return refuse(&rec, "agent", std.fmt.bufPrint(&msg, "quoin-sudo: {s}", .{why}) catch "quoin-sudo: the forwarded agent failed", why);
-        },
-        .signed => |x| {
+    switch (agent.ask(s, keys, raw, &agent_buf)) {
+        .failed => |why| return refuse(&rec, "agent", told(why), why),
+        .answered => |x| {
             var fp: [50]u8 = undefined;
             rec.key = sshkey.fingerprint(x.key, &fp);
-            if (!sshkey.verify(x.key, raw, x.signature)) return refuse(&rec, "signature did not verify", "signature did not verify", null);
+            const both = sudomsg.signed(raw, x.answer, &signed_buf) catch unreachable; // proven: raw is at most max_size, the answer less than a frame
+            if (!sshkey.verify(x.key, both, x.signature)) return refuse(&rec, "signature did not verify", "signature did not verify", null);
+            const a = sudomsg.parseAnswer(x.answer) catch |e| {
+                const why = switch (e) {
+                    error.Malformed => "not a well-formed quoin-sudo answer",
+                    error.Critical => "a quoin-sudo answer with a critical field this reader does not know",
+                };
+                return refuse(&rec, "answer", told(why), why);
+            };
+            rec.hops = a.hops;
+            // The person's Cancel, in the gate's words: the Mac sends only
+            // a dialog.
+            if (a.decision == .refuse) return refuse(&rec, "signer", "cancelled", null);
+            sudomsg.check(m, a, x.key) catch |e| {
+                var long: [64]u8 = undefined;
+                // Go's Message.Check's words.
+                const why = switch (e) {
+                    error.NotWindowKey => "signed with a key that is not the window's",
+                    error.Refused => "refused",
+                    error.NotVerified => "presence was required and not verified",
+                    error.WindowTooLong => std.fmt.bufPrint(&long, "a window of {d}s, over the {d}s offered", .{ a.window, m.window }) catch "a window over the one offered",
+                    error.NoWindowHere => "a window with no dialog or no presence verified",
+                    error.NotThisHost => "the last hop is not this host",
+                };
+                return refuse(&rec, "answer", told(why), why);
+            };
             rec.write("allow", "signature", null);
             return 1;
         },
     }
+}
+
+/// "quoin-sudo: " and `why`, as the gate tells sudo.
+fn told(why: []const u8) []const u8 {
+    const S = struct {
+        var buf: [256]u8 = undefined;
+    };
+    return std.fmt.bufPrint(&S.buf, "quoin-sudo: {s}", .{why}) catch "quoin-sudo: refused";
 }
 
 /// The longest of the listed keys, in agent.validKeys' form.
@@ -397,6 +437,8 @@ const Record = struct {
     chain: []const chain.Link = &.{},
     cmdlines_left_out: bool = false,
     key: []const u8 = "",
+    /// The answer's hops, once it parsed.
+    hops: ?sudomsg.Hops = null,
 
     fn write(r: Record, outcome: []const u8, source: []const u8, reason: ?[]const u8) void {
         var line: [16 << 10]u8 = undefined;
@@ -437,7 +479,18 @@ const Record = struct {
         }
         try w.writeAll("]");
         if (r.cmdlines_left_out) try w.writeAll(" cmdlines_left_out=true");
-        try w.print(" key={s} outcome={s}", .{ r.key, outcome });
+        try w.print(" key={s}", .{r.key});
+        if (r.hops) |h| {
+            try w.writeAll(" hops=[");
+            var it = h.iterator();
+            var i: usize = 0;
+            while (it.next()) |hop| : (i += 1) {
+                var fp: [50]u8 = undefined;
+                try w.print("{s}{s}", .{ if (i == 0) "" else " ", sshkey.fingerprint(hop.host_key, &fp) });
+            }
+            try w.writeAll("]");
+        }
+        try w.print(" outcome={s}", .{outcome});
         try field(w, "source", source);
         if (reason) |why| try field(w, "reason", why);
         try w.writeAll("\n");

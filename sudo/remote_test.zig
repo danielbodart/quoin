@@ -1,6 +1,7 @@
 //! Remote mode from outside, on a plugin built to take every chain for
 //! remote: the check-in, the gate's 'M', a test agent on a socket that
-//! answers identities and sign requests, and the 'S' the gate gets.
+//! answers identities and the quoin-sudo@quoin extension, and the 'S' the
+//! gate gets.
 
 const std = @import("std");
 const minish = @import("minish");
@@ -261,8 +262,11 @@ fn identities(w: *Wire) []const u8 {
     return agentFrame(w, 12, &.{ "key-a", "unlisted", "key-c", "listed second", "key-b", "listed first" });
 }
 
-fn signResponse(w: *Wire) []const u8 {
-    return agentFrame(w, 14, &.{signature});
+const the_answer = "\x00\x00\x00\x14quoin-sudo-answer-v1 and the rest";
+
+/// The extension's reply: success, the answer and its signature.
+fn answerReply(w: *Wire) []const u8 {
+    return agentFrame(w, 6, &.{ the_answer, signature });
 }
 
 const Ids = struct {
@@ -333,14 +337,14 @@ fn run(gate_replies: []const []const u8, agent_replies: ?[]const []const u8, gro
     return .{ .rc = rc, .gate = &gate_peer, .agent = with_agent, .errstr = errstr };
 }
 
-test "a remote sudo checks in with 'm', the first listed identity signs the gate's message on a connection closed before the 'S', and it is allowed with sudo's ids as they were" {
+test "a remote sudo checks in with 'm', the first listed identity answers the gate's message in the extension on a connection closed before the 'S', and it is allowed with sudo's ids as they were" {
     var fds_buf: [64]i32 = undefined;
     const fds = try openFds(&fds_buf);
     const before = Ids.now();
     var mw: Wire = .{};
     var iw: Wire = .{};
     var sw: Wire = .{};
-    const r = try run(&.{ "Y\x00\x00", mReply(&mw, &.{ "key-b", "key-c" }), "Y\x00\x00" }, &.{ identities(&iw), signResponse(&sw) }, null);
+    const r = try run(&.{ "Y\x00\x00", mReply(&mw, &.{ "key-b", "key-c" }), "Y\x00\x00" }, &.{ identities(&iw), answerReply(&sw) }, null);
     try testing.expectEqual(@as(c_int, 1), r.rc);
     try testing.expectEqualSlices(u8, "CAS", r.gate.kinds[0..3]);
     try testing.expectEqualSlices(u8, "m\x00\x00\x00\x00", r.gate.body(0));
@@ -348,16 +352,18 @@ test "a remote sudo checks in with 'm', the first listed identity signs the gate
     var s: Wire = .{};
     s.bytes("p");
     s.string("key-c");
+    s.bytes("n");
+    s.string(the_answer);
     s.bytes("g");
     s.string(signature);
     try testing.expectEqualSlices(u8, s.out(), r.gate.body(2));
     const a = r.agent.?;
     try testing.expectEqualSlices(u8, &.{11}, a.body(0));
     var want: Wire = .{};
-    want.bytes(&.{13});
+    want.bytes(&.{27});
+    want.string("quoin-sudo@quoin");
     want.string("key-c");
     want.string(message);
-    want.int(0);
     try testing.expectEqualSlices(u8, want.out(), a.body(1));
     try testing.expectEqual(@as(?bool, true), agent_closed_by_s);
     try testing.expectEqual(@as(usize, 0), said_n);
@@ -366,13 +372,17 @@ test "a remote sudo checks in with 'm', the first listed identity signs the gate
     try testing.expectEqualSlices(i32, fds, try openFds(&after_buf));
 }
 
-test "an agent that refuses, fails, hangs up or has no listed key, or no agent at all, is an 'f' and the gate's no refuses" {
+test "an agent that refuses, fails, hangs up, has no listed key or only signs, or no agent at all, is an 'f' and the gate's no refuses" {
     var iw: Wire = .{};
     const ids = identities(&iw);
     var uw: Wire = .{};
     const unlisted = agentFrame(&uw, 12, &.{ "key-a", "" });
+    var sw: Wire = .{};
+    const sign_response = agentFrame(&sw, 14, &.{signature});
     const cases = [_]struct { agent: ?[]const []const u8, why: []const u8 }{
         .{ .agent = &.{ ids, "\x00\x00\x00\x01\x05" }, .why = "the forwarded agent refused" },
+        .{ .agent = &.{ ids, "\x00\x00\x00\x01\x1c" }, .why = "the forwarded agent refused" },
+        .{ .agent = &.{ ids, sign_response }, .why = "the forwarded agent sent garbage" },
         .{ .agent = &.{"\x00\x00\x00\x01\x05"}, .why = "the forwarded agent failed" },
         .{ .agent = &.{}, .why = "the forwarded agent hung up" },
         .{ .agent = &.{ids}, .why = "the forwarded agent hung up" },
@@ -392,12 +402,18 @@ test "an agent that refuses, fails, hangs up or has no listed key, or no agent a
     }
 }
 
-test "a no to the remote 'A' refuses with its message, and a yes, a password or a bad 'M' is no answer" {
+test "a no or a yes to the remote 'A' is the gate's, with the agent asked nothing, and a password or a bad 'M' is no answer" {
     var mw: Wire = .{};
-    const r = try run(&.{ "Y\x00\x00", "N\x00\x1fremote sudo is off on this host" }, null, null);
+    const r = try run(&.{ "Y\x00\x00", "N\x00\x1fremote sudo is off on this host" }, &.{}, null);
     try testing.expectEqual(@as(c_int, 0), r.rc);
     try testing.expectEqualStrings("remote sudo is off on this host", saidLine(0));
-    for ([_][]const u8{ "Y\x00\x00", "W\x00\x02pw", mReply(&mw, &.{}), "M\x00\x00\x00\x02ab" }) |reply| {
+    try testing.expectEqual(@as(usize, 0), r.agent.?.n);
+    const y = try run(&.{ "Y\x00\x00", "Y\x00\x00" }, &.{}, null);
+    try testing.expectEqual(@as(c_int, 1), y.rc);
+    try testing.expectEqual(@as(usize, 2), y.gate.n);
+    try testing.expectEqual(@as(usize, 0), y.agent.?.n);
+    try testing.expectEqual(@as(usize, 0), said_n);
+    for ([_][]const u8{ "W\x00\x02pw", mReply(&mw, &.{}), "M\x00\x00\x00\x02ab" }) |reply| {
         const x = try run(&.{ "Y\x00\x00", reply }, null, null);
         try testing.expectEqual(@as(c_int, 0), x.rc);
         try testing.expectEqualStrings("no answer from gate", std.mem.span(x.errstr));
@@ -409,13 +425,13 @@ test "a yes or garbage after the 'S' is the gate's answer" {
     var mw: Wire = .{};
     var iw: Wire = .{};
     var sw: Wire = .{};
-    const r = try run(&.{ "Y\x00\x00", mReply(&mw, &.{"key-b"}), "Y\x00\x03ok." }, &.{ identities(&iw), signResponse(&sw) }, null);
+    const r = try run(&.{ "Y\x00\x00", mReply(&mw, &.{"key-b"}), "Y\x00\x03ok." }, &.{ identities(&iw), answerReply(&sw) }, null);
     try testing.expectEqual(@as(c_int, 1), r.rc);
     try testing.expectEqualStrings("ok.", saidLine(0));
     var mw2: Wire = .{};
     var iw2: Wire = .{};
     var sw2: Wire = .{};
-    const g = try run(&.{ "Y\x00\x00", mReply(&mw2, &.{"key-b"}), "W\x00\x02pw" }, &.{ identities(&iw2), signResponse(&sw2) }, null);
+    const g = try run(&.{ "Y\x00\x00", mReply(&mw2, &.{"key-b"}), "W\x00\x02pw" }, &.{ identities(&iw2), answerReply(&sw2) }, null);
     try testing.expectEqual(@as(c_int, 0), g.rc);
     try testing.expectEqualStrings("no answer from gate", std.mem.span(g.errstr));
 }
@@ -519,7 +535,7 @@ var frame_buf: [agent.max_frame]u8 = undefined;
 var replies_buf: [2]Wire = undefined;
 
 /// Two agent replies from a script: raw bytes, or an identities answer and
-/// a sign response built from it, each maybe cut short or with a byte
+/// an extension reply built from it, each maybe cut short or with a byte
 /// changed.
 fn agentReplies(script: []const u8) [2][]const u8 {
     const at = struct {
@@ -545,7 +561,7 @@ fn agentReplies(script: []const u8) [2][]const u8 {
             }
             _ = agentFrame(w, if (mode & 2 == 0) 12 else at(script, 2), parts[0 .. 2 * n]);
         } else {
-            _ = agentFrame(w, if (mode & 4 == 0) 14 else 5, if (mode & 8 == 0) &.{signature} else &.{rest});
+            _ = agentFrame(w, if (mode & 4 == 0) 6 else 5, if (mode & 8 == 0) &.{ the_answer, signature } else &.{rest});
         }
         if (mode & 0x30 == 0x10 and w.len > 0) w.len -= 1 + @as(usize, at(script, 3)) % w.len;
         if (mode & 0x30 == 0x20 and w.len > 0) w.buf[at(script, 4) % w.len] ^= at(script, 5) | 1;
@@ -554,7 +570,7 @@ fn agentReplies(script: []const u8) [2][]const u8 {
     return out;
 }
 
-fn signsOrSaysWhy(script: []const u8) !void {
+fn answersOrSaysWhy(script: []const u8) !void {
     const replies = agentReplies(script);
     const path = try agentPath();
     agent_peer = .{ .listener = try listen(path), .path = path, .replies = &replies, .header = .stream };
@@ -566,8 +582,8 @@ fn signsOrSaysWhy(script: []const u8) !void {
     kw.int(2);
     kw.string("key-b");
     kw.string("key-c");
-    switch (agent.sign(s, kw.out(), message, &frame_buf)) {
-        .signed => |x| {
+    switch (agent.ask(s, kw.out(), message, &frame_buf)) {
+        .answered => |x| {
             try testing.expect(std.mem.eql(u8, x.key, "key-b") or std.mem.eql(u8, x.key, "key-c"));
             try testing.expect(x.signature.len >= 8);
         },
@@ -578,6 +594,6 @@ fn signsOrSaysWhy(script: []const u8) !void {
     }
 }
 
-test "property: any agent replies give a signature by a listed key or a reason, never a panic" {
-    try minish.check(testing.allocator, minish.gen.list(u8, minish.gen.int(u8), 0, 40), signsOrSaysWhy, .{ .num_runs = 1_000, .seed = 0xa6e });
+test "property: any agent replies give an answer by a listed key or a reason, never a panic" {
+    try minish.check(testing.allocator, minish.gen.list(u8, minish.gen.int(u8), 0, 40), answersOrSaysWhy, .{ .num_runs = 1_000, .seed = 0xa6e });
 }

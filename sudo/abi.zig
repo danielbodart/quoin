@@ -1,5 +1,6 @@
-//! The one file that reads C headers: sudo's plugin API, PAM's, and the
-//! libc id calls the drop for the agent's connect makes; on macOS also the
+//! The one file that reads C headers: sudo's plugin API, PAM's, the libc
+//! id calls the drop for the agent's connect makes, and getpwnam, by which
+//! quoin-presence refuses to check root's password; on macOS also the
 //! PAM module API, sysctl's kinfo_proc, proc_pidpath and dlfcn, which the
 //! darwin build uses in place of /proc and the gate.
 
@@ -9,6 +10,7 @@ pub const c = @cImport({
     @cDefine("_GNU_SOURCE", {});
     @cInclude("unistd.h");
     @cInclude("grp.h");
+    @cInclude("pwd.h");
     @cInclude("sudo_plugin.h");
     @cInclude("security/pam_appl.h");
     if (builtin.os.tag == .macos) {

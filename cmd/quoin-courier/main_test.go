@@ -41,7 +41,7 @@ func TestServeRefusesToStartWithoutTheCourierFd(t *testing.T) {
 func TestAConfigReadsEverySetting(t *testing.T) {
 	path := writeConfig(t, `{
 		"fileName": "chase.json", "allowedSigners": "/etc/quoin/allowed_signers",
-		"peers": {"quoin-signer.service": "ssh-signer", "quoin-sudo.service": "sudo-gate"}
+		"peers": {"quoin-signer.service": "quoin-signer", "quoin-sudo.service": "quoin-sudo"}
 	}`)
 	c, err := loadConfig(path)
 	if err != nil {
@@ -49,7 +49,7 @@ func TestAConfigReadsEverySetting(t *testing.T) {
 	}
 	want := &config{
 		FileName: "chase.json", AllowedSigners: "/etc/quoin/allowed_signers",
-		Peers: map[string]string{"quoin-signer.service": "ssh-signer", "quoin-sudo.service": "sudo-gate"},
+		Peers: map[string]string{"quoin-signer.service": "quoin-signer", "quoin-sudo.service": "quoin-sudo"},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Errorf("got %+v", c)
@@ -70,8 +70,8 @@ func TestAConfigThatWouldSilentlyNotApplyIsRefused(t *testing.T) {
 		`{"fileName": "chase.json"}`,
 		`{"fileName": "chase.json", "allowedSigners": "etc/allowed_signers"}`,
 		`{"fileName": "chase.json", "allowedSigners": "/etc//allowed_signers"}`,
-		`{"fileName": "chase.json", ` + s + `, "peers": {"quoin-signer": "ssh-signer"}}`,
-		`{"fileName": "chase.json", ` + s + `, "peers": {"a/b.service": "ssh-signer"}}`,
+		`{"fileName": "chase.json", ` + s + `, "peers": {"quoin-signer": "quoin-signer"}}`,
+		`{"fileName": "chase.json", ` + s + `, "peers": {"a/b.service": "quoin-signer"}}`,
 		`{"fileName": "chase.json", ` + s + `, "peers": {"quoin-signer.service": ""}}`,
 		`{"fileName": "chase.json", ` + s + `, "peer": {}}`,
 		`{"fileName": "chase.json", ` + s + `} {}`,

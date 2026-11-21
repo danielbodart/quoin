@@ -89,7 +89,7 @@ in
       peers = mkOption {
         type = types.attrsOf types.str;
         default = { };
-        example = { "quoin-signer.service" = "ssh-signer"; };
+        example = { "quoin-signer.service" = "quoin-signer"; };
         description = ''
           The system units allowed to call the courier, each to the user it
           runs as: a caller must be that user, in that unit's cgroup. The

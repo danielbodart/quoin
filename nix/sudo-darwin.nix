@@ -1,7 +1,8 @@
 # darwinModules.sudo: quoin-sudo's remote mode on a Mac, approved from the
 # machine the person is at. A sudo of forUser's with no tty, under an ssh
-# login with a forwarded agent, is signed there by a listed key, through
-# that machine's quoin-signer and galley, or refused. Everything else is
+# login with a forwarded agent, is asked there, through that machine's
+# quoin-signer and galley, and approved by its answer, signed by a listed
+# key, or refused. Everything else is
 # stock sudo. There is no gate daemon: remote mode reads no rules, so the
 # plugin does the gate's remote half in sudo's own process (sudo/
 # quoin_sudo_darwin.zig), and there is no local mode, the Mac having no
@@ -34,7 +35,7 @@ in
     remoteKeys = mkOption {
       type = types.listOf (types.strMatching "[^\n]+");
       default = [ ];
-      description = "SSH public key lines, nistp256 or ed25519, whose signature approves forUser's remote sudo with no tty (`ssh -A host sudo x`); empty is remote mode off, which on a Mac is every sudo stock.";
+      description = "SSH public key lines, nistp256 or ed25519, whose signed answer approves forUser's remote sudo with no tty (`ssh -A host sudo x`); empty is remote mode off, which on a Mac is every sudo stock.";
     };
   };
 
