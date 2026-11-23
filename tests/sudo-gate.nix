@@ -529,8 +529,11 @@ in
         galley("never")
         machine.succeed("install -m 0600 ${clientKey}/id /root/id")
         ssh = "ssh -i /root/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes dan@127.0.0.1"
+        # </dev/null: an ssh with the backdoor's tty as stdin can read the
+        # driver's next line (its status query) once it has closed stdout
+        # and before it exits, and the test then waits forever.
         print("the links above the remote shell: " + machine.succeed(
-            f"{ssh} 'p=$(ps -o ppid= -p $$); ps -o user=,comm= -p $p; ps -o user=,comm= -p $(ps -o ppid= -p $p)'"))
+            f"{ssh} 'p=$(ps -o ppid= -p $$); ps -o user=,comm= -p $p; ps -o user=,comm= -p $(ps -o ppid= -p $p)' </dev/null"))
         remote = f"{ssh} \"/run/wrappers/bin/sudo -S -p ''' tar --version\""
         asked = len(events("question"))
         machine.succeed(f"printf '%s\\n' {pw} | {remote}")
